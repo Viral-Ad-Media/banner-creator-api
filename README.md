@@ -51,6 +51,8 @@ Create a local env file:
 cp .env.example .env
 ```
 
+Use raw values, not shell-style quoted assignments copied into the Vercel dashboard. For example, set `SUPABASE_URL` to `https://your-project-ref.supabase.co`, not `"https://your-project-ref.supabase.co"`.
+
 Required variables:
 
 ```bash
@@ -138,6 +140,8 @@ Required Vercel environment variables:
 - `CORS_ORIGIN=https://your-frontend-domain.vercel.app`
 - `SUPABASE_URL=...`
 - `SUPABASE_SERVICE_ROLE_KEY=...`
+
+Enter the values only. Do not include surrounding quotes in the Vercel UI.
 
 If you want the same backend to work for local development and production, set `CORS_ORIGIN` to a comma-separated list such as `http://localhost:3000,https://your-frontend-domain.vercel.app`.
 
