@@ -62,6 +62,8 @@ SUPABASE_URL=https://your-project-ref.supabase.co
 SUPABASE_SERVICE_ROLE_KEY=your-supabase-service-role-key
 ```
 
+`CORS_ORIGIN` accepts a comma-separated list, so you can allow local development and Vercel at the same time. Example: `http://localhost:3000,https://your-web.vercel.app`.
+
 ## Local Development
 
 Install dependencies:
@@ -116,6 +118,34 @@ All routes except `/api/health` require `Authorization: Bearer <supabase-access-
 ## Database Setup
 
 Run [`supabase/schema.sql`](./supabase/schema.sql) in your Supabase SQL editor before using authenticated app flows.
+
+## Deploying to Vercel
+
+The backend can be deployed directly to Vercel as an Express project. Vercel's current Express guide supports `src/server.ts` as a valid entrypoint and allows either a default export or an `app.listen(...)` server pattern. I also added [`vercel.json`](./vercel.json) to raise the function timeout to 60 seconds for Gemini-backed routes.
+
+Recommended project settings:
+
+- Root Directory: `banner-creator-backend`
+- Framework Preset: `Express`
+- Install Command: `npm install`
+- Build Command: `npm run build`
+
+Required Vercel environment variables:
+
+- `NODE_ENV=production`
+- `PORT=4000`
+- `GEMINI_API_KEY=...`
+- `CORS_ORIGIN=https://your-frontend-domain.vercel.app`
+- `SUPABASE_URL=...`
+- `SUPABASE_SERVICE_ROLE_KEY=...`
+
+If you want the same backend to work for local development and production, set `CORS_ORIGIN` to a comma-separated list such as `http://localhost:3000,https://your-frontend-domain.vercel.app`.
+
+After deploy, verify:
+
+- `GET https://<your-api-domain>/api/health`
+- Authenticated `GET /api/auth/me`
+- One generation request, especially `POST /api/generations/plan`
 
 ## Notes
 
