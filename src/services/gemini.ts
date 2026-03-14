@@ -1,4 +1,4 @@
-import { GoogleGenAI, Schema, Type } from '@google/genai';
+import { GoogleGenAI, Modality, Schema, Type } from '@google/genai';
 import { env } from '../config/env.js';
 
 export type AspectRatio = '1:1' | '16:9' | '9:16' | '3:4' | '4:5';
@@ -182,10 +182,9 @@ export const generateImage = async (
 
     const response = await getClient().models.generateContent({
       model: 'gemini-2.5-flash-image',
-      contents: {
-        parts: [{ text: promptText }, ...referenceParts],
-      },
+      contents: [{ text: promptText }, ...referenceParts],
       config: {
+        responseModalities: [Modality.TEXT, Modality.IMAGE],
         imageConfig: {
           aspectRatio: aspectRatio === '4:5' ? '3:4' : aspectRatio,
         },
@@ -213,8 +212,15 @@ export const generateImage = async (
     return await executeGen(
       `Professional photography, ${prompt}. Cinematic lighting, highly detailed, premium quality, clean background.`
     );
-  } catch {
-    return executeGen(`Artistic illustration, ${prompt}. Minimalist, abstract, high quality.`);
+  } catch (error) {
+    const fallbackError = error instanceof Error ? error : new Error('Primary image generation attempt failed.');
+
+    try {
+      return await executeGen(`Artistic illustration, ${prompt}. Minimalist, abstract, high quality.`);
+    } catch (fallback) {
+      const fallbackMessage = fallback instanceof Error ? fallback.message : 'Fallback image generation attempt failed.';
+      throw new Error(`Image generation failed. ${fallbackMessage} Primary attempt: ${fallbackError.message}`);
+    }
   }
 };
 
@@ -225,16 +231,17 @@ export const editImage = async (base64Image: string, prompt: string): Promise<st
 
   const response = await getClient().models.generateContent({
     model: 'gemini-2.5-flash-image',
-    contents: {
-      parts: [
-        { text: prompt },
-        {
-          inlineData: {
-            mimeType: parsedImage.mimeType,
-            data: parsedImage.data,
-          },
+    contents: [
+      { text: prompt },
+      {
+        inlineData: {
+          mimeType: parsedImage.mimeType,
+          data: parsedImage.data,
         },
-      ],
+      },
+    ],
+    config: {
+      responseModalities: [Modality.TEXT, Modality.IMAGE],
     },
   });
 
