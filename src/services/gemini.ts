@@ -43,6 +43,7 @@ export interface VideoGenerationRequest {
   durationSeconds?: VideoDurationSeconds;
   modelPreset?: VideoModelPreset;
   includeAudio?: boolean;
+  sourceImageDataUrl?: string;
 }
 
 export interface VideoGenerationStatus {
@@ -289,13 +290,21 @@ Has Asset Upload: ${request.hasAssetImage}
 
 export const startVideoGeneration = async (request: VideoGenerationRequest): Promise<VideoGenerationStatus> => {
   const modelId = getVideoModelId(request.modelPreset);
+  const sourceImage = request.sourceImageDataUrl
+    ? (() => {
+        const parsedImage = parseImageDataUrl(request.sourceImageDataUrl!);
+        return {
+          imageBytes: parsedImage.data,
+          mimeType: parsedImage.mimeType,
+        };
+      })()
+    : undefined;
 
   try {
     const operation = await getClient().models.generateVideos({
       model: modelId,
-      source: {
-        prompt: request.prompt,
-      },
+      prompt: request.prompt,
+      ...(sourceImage ? { image: sourceImage } : {}),
       config: {
         numberOfVideos: 1,
         aspectRatio: request.aspectRatio || '16:9',

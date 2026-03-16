@@ -46,6 +46,7 @@ const videoStartSchema = z.object({
   durationSeconds: z.union([z.literal(4), z.literal(6), z.literal(8)]).default(4),
   modelPreset: z.enum(['fast', 'quality']).default('fast'),
   includeAudio: z.boolean().optional(),
+  sourceImageDataUrl: z.string().min(30).optional(),
 });
 
 const videoStatusQuerySchema = z.object({
