@@ -1,11 +1,15 @@
-import { GoogleGenAI, Modality, Schema, Type } from '@google/genai';
+import { GenerateVideosOperation, GoogleGenAI, Modality, Schema, Type } from '@google/genai';
 import { env } from '../config/env.js';
 
 export type AspectRatio = '1:1' | '16:9' | '9:16' | '3:4' | '4:5';
+export type VideoAspectRatio = '16:9' | '9:16';
+export type VideoDurationSeconds = 4 | 6 | 8;
+export type VideoModelPreset = 'fast' | 'quality';
 
 export interface BannerRequest {
   userPrompt: string;
   aspectRatio: AspectRatio;
+  bannerCount?: number;
   hasBackgroundImage?: boolean;
   hasAssetImage?: boolean;
 }
@@ -31,6 +35,30 @@ export interface BannerPlan {
     keywords: string[];
   };
 }
+
+export interface VideoGenerationRequest {
+  prompt: string;
+  negativePrompt?: string;
+  aspectRatio?: VideoAspectRatio;
+  durationSeconds?: VideoDurationSeconds;
+  modelPreset?: VideoModelPreset;
+  includeAudio?: boolean;
+}
+
+export interface VideoGenerationStatus {
+  operationName: string;
+  status: 'PENDING' | 'RUNNING' | 'SUCCEEDED' | 'FAILED';
+  done: boolean;
+  errorMessage?: string;
+  mimeType?: string;
+  modelId?: string;
+}
+
+type BannerVariant = BannerPlan['additional_banners'][number];
+
+const DEFAULT_BANNER_COUNT = 3;
+const MIN_BANNER_COUNT = 1;
+const MAX_BANNER_COUNT = 6;
 
 let client: GoogleGenAI | null = null;
 
@@ -73,16 +101,124 @@ Your goal is to design a high-quality, ready-to-render social media banner campa
 1. Analyze user prompt for topic, intent, and style.
 2. Create concise high-impact copy.
 3. If hasBackgroundImage is true, use image_prompt "User provided background".
-4. If prompt implies multiple items, return additional banners.
-5. Always include CTA.
+4. Return exactly the number of requested creatives: 1 main banner plus N-1 items in additional_banners.
+5. If the requested count is 1, additional_banners must be an empty array.
+6. Make each additional banner a distinct but on-brand variation.
+7. Always include CTA.
 
 Return strict JSON with fields: main_banner, additional_banners, seo.
 `;
 
+const clampBannerCount = (value?: number) =>
+  Math.max(MIN_BANNER_COUNT, Math.min(MAX_BANNER_COUNT, value ?? DEFAULT_BANNER_COUNT));
+
+const getVideoModelId = (preset: VideoModelPreset = 'fast') =>
+  preset === 'quality' ? 'veo-3.1-generate-preview' : 'veo-3.1-fast-generate-preview';
+
+const getVideoErrorMessage = (error: Record<string, unknown> | undefined) => {
+  if (!error) return undefined;
+
+  if (typeof error.message === 'string' && error.message.trim()) {
+    return error.message;
+  }
+
+  if (typeof error.details === 'string' && error.details.trim()) {
+    return error.details;
+  }
+
+  return 'Video generation failed.';
+};
+
+const buildVideoOperation = (operationName: string) => {
+  const operation = new GenerateVideosOperation();
+  operation.name = operationName;
+  return operation;
+};
+
+const getVideoOperationStatus = async (operationName: string) => {
+  const operation = await getClient().operations.getVideosOperation({
+    operation: buildVideoOperation(operationName),
+  });
+
+  return operation;
+};
+
+const mapVideoStatus = (operation: GenerateVideosOperation, modelId?: string): VideoGenerationStatus => {
+  if (operation.done) {
+    const generatedVideo = operation.response?.generatedVideos?.[0]?.video;
+
+    if (operation.error) {
+      return {
+        operationName: operation.name || '',
+        status: 'FAILED',
+        done: true,
+        errorMessage: getVideoErrorMessage(operation.error),
+        modelId,
+      };
+    }
+
+    if (!generatedVideo?.uri && !generatedVideo?.videoBytes) {
+      return {
+        operationName: operation.name || '',
+        status: 'FAILED',
+        done: true,
+        errorMessage: 'Video generation finished without a downloadable output.',
+        modelId,
+      };
+    }
+
+    return {
+      operationName: operation.name || '',
+      status: 'SUCCEEDED',
+      done: true,
+      mimeType: generatedVideo.mimeType || 'video/mp4',
+      modelId,
+    };
+  }
+
+  return {
+    operationName: operation.name || '',
+    status: 'RUNNING',
+    done: false,
+    modelId,
+  };
+};
+
+const createFallbackVariant = (plan: BannerPlan, index: number): BannerVariant => ({
+  title: `${plan.main_banner.headline} ${index + 2}`,
+  subtitle: plan.main_banner.subheadline,
+  image_prompt: plan.main_banner.image_prompt,
+  description: plan.main_banner.description,
+  cta: plan.main_banner.cta,
+});
+
+const normalizeBannerPlan = (plan: BannerPlan, bannerCount: number): BannerPlan => {
+  const desiredAdditionalCount = Math.max(0, bannerCount - 1);
+  const normalizedAdditional = (Array.isArray(plan.additional_banners) ? plan.additional_banners : []).slice(0, desiredAdditionalCount);
+
+  while (normalizedAdditional.length < desiredAdditionalCount) {
+    const fallback = normalizedAdditional[normalizedAdditional.length - 1] ?? createFallbackVariant(plan, normalizedAdditional.length);
+    normalizedAdditional.push({
+      title: fallback.title || plan.main_banner.headline,
+      subtitle: fallback.subtitle || plan.main_banner.subheadline,
+      image_prompt: fallback.image_prompt || plan.main_banner.image_prompt,
+      description: fallback.description || plan.main_banner.description,
+      cta: fallback.cta || plan.main_banner.cta,
+    });
+  }
+
+  return {
+    ...plan,
+    additional_banners: normalizedAdditional,
+  };
+};
+
 export const generateBannerPlan = async (request: BannerRequest): Promise<BannerPlan> => {
+  const bannerCount = clampBannerCount(request.bannerCount);
   const prompt = `
 User Prompt: ${request.userPrompt}
 Aspect Ratio: ${request.aspectRatio}
+Total Banner Images Requested: ${bannerCount}
 Has Background Upload: ${request.hasBackgroundImage}
 Has Asset Upload: ${request.hasAssetImage}
 `;
@@ -145,10 +281,104 @@ Has Asset Upload: ${request.hasAssetImage}
 
   try {
     const jsonText = rawText.replace(/```json\n?|\n?```/g, '').trim();
-    return JSON.parse(jsonText) as BannerPlan;
+    return normalizeBannerPlan(JSON.parse(jsonText) as BannerPlan, bannerCount);
   } catch {
     throw new Error('Invalid JSON returned for banner plan.');
   }
+};
+
+export const startVideoGeneration = async (request: VideoGenerationRequest): Promise<VideoGenerationStatus> => {
+  const modelId = getVideoModelId(request.modelPreset);
+
+  try {
+    const operation = await getClient().models.generateVideos({
+      model: modelId,
+      source: {
+        prompt: request.prompt,
+      },
+      config: {
+        numberOfVideos: 1,
+        aspectRatio: request.aspectRatio || '16:9',
+        durationSeconds: request.durationSeconds || 4,
+        resolution: '720p',
+        negativePrompt: request.negativePrompt,
+        generateAudio: request.includeAudio ?? false,
+      },
+    });
+
+    if (!operation.name) {
+      throw new Error('Video generation did not return an operation name.');
+    }
+
+    return {
+      operationName: operation.name,
+      status: 'PENDING',
+      done: false,
+      modelId,
+    };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Unable to start video generation.';
+    throw new Error(
+      `${message} Veo generation requires Gemini API access to the selected video model.`
+    );
+  }
+};
+
+export const getVideoGenerationStatus = async (
+  operationName: string,
+  modelPreset?: VideoModelPreset
+): Promise<VideoGenerationStatus> => {
+  const modelId = getVideoModelId(modelPreset);
+  const operation = await getVideoOperationStatus(operationName);
+  return mapVideoStatus(operation, modelId);
+};
+
+export const downloadGeneratedVideo = async (
+  operationName: string
+): Promise<{ buffer: Buffer; mimeType: string }> => {
+  const operation = await getVideoOperationStatus(operationName);
+  const status = mapVideoStatus(operation);
+
+  if (status.status === 'FAILED') {
+    throw new Error(status.errorMessage || 'Video generation failed.');
+  }
+
+  if (!status.done) {
+    throw new Error('Video is still generating. Please wait for completion before downloading.');
+  }
+
+  const generatedVideo = operation.response?.generatedVideos?.[0]?.video;
+  if (!generatedVideo) {
+    throw new Error('Generated video file was not found.');
+  }
+
+  if (generatedVideo.videoBytes) {
+    return {
+      buffer: Buffer.from(generatedVideo.videoBytes, 'base64'),
+      mimeType: generatedVideo.mimeType || 'video/mp4',
+    };
+  }
+
+  if (!generatedVideo.uri) {
+    throw new Error('Generated video is missing a download URL.');
+  }
+
+  const response = await fetch(generatedVideo.uri, {
+    headers: {
+      'x-goog-api-key': env.GEMINI_API_KEY,
+    },
+    redirect: 'follow',
+  });
+
+  if (!response.ok) {
+    throw new Error(`Failed to download generated video: ${response.status} ${response.statusText}`);
+  }
+
+  const arrayBuffer = await response.arrayBuffer();
+  return {
+    buffer: Buffer.from(arrayBuffer),
+    mimeType: response.headers.get('content-type') || generatedVideo.mimeType || 'video/mp4',
+  };
 };
 
 export const generateImage = async (

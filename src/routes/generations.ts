@@ -4,14 +4,23 @@ import { supabaseAdmin } from '../db/supabase.js';
 import { requireAuth } from '../middleware/auth.js';
 import { ApiError } from '../middleware/error.js';
 import { assertCreditsAvailable, getUsageSummary, trackUsage } from '../lib/usage.js';
-import { editImage, generateBannerPlan, generateImage } from '../services/gemini.js';
+import {
+  downloadGeneratedVideo,
+  editImage,
+  generateBannerPlan,
+  generateImage,
+  getVideoGenerationStatus,
+  startVideoGeneration,
+} from '../services/gemini.js';
 import type { GenerationStatus, GenerationType } from '../types/domain.js';
 
 const aspectRatioSchema = z.enum(['1:1', '16:9', '9:16', '3:4', '4:5']);
+const videoAspectRatioSchema = z.enum(['16:9', '9:16']);
 
 const planSchema = z.object({
   userPrompt: z.string().trim().min(3).max(5000),
   aspectRatio: aspectRatioSchema,
+  bannerCount: z.number().int().min(1).max(6).optional(),
   hasBackgroundImage: z.boolean().optional(),
   hasAssetImage: z.boolean().optional(),
   projectId: z.string().uuid().optional(),
@@ -28,6 +37,20 @@ const editSchema = z.object({
   base64Image: z.string().min(30),
   prompt: z.string().trim().min(3).max(5000),
   projectId: z.string().uuid().optional(),
+});
+
+const videoStartSchema = z.object({
+  prompt: z.string().trim().min(10).max(5000),
+  negativePrompt: z.string().trim().max(1000).optional(),
+  aspectRatio: videoAspectRatioSchema.default('16:9'),
+  durationSeconds: z.union([z.literal(4), z.literal(6), z.literal(8)]).default(4),
+  modelPreset: z.enum(['fast', 'quality']).default('fast'),
+  includeAudio: z.boolean().optional(),
+});
+
+const videoStatusQuerySchema = z.object({
+  operationName: z.string().trim().min(1),
+  modelPreset: z.enum(['fast', 'quality']).optional(),
 });
 
 const generationRouter = Router();
@@ -71,7 +94,7 @@ generationRouter.get('/', async (req, res, next) => {
   try {
     const { data: generations, error } = await supabaseAdmin
       .from('generations')
-      .select('id, project_id, type, status, prompt, aspect_ratio, input, result, error_message, created_at')
+      .select('id, project_id, type, status, prompt, aspect_ratio, error_message, created_at')
       .eq('user_id', req.auth!.userId)
       .order('created_at', { ascending: false })
       .limit(50);
@@ -96,6 +119,7 @@ generationRouter.post('/plan', async (req, res, next) => {
     const result = await generateBannerPlan({
       userPrompt: payload.userPrompt,
       aspectRatio: payload.aspectRatio,
+      bannerCount: payload.bannerCount,
       hasBackgroundImage: payload.hasBackgroundImage,
       hasAssetImage: payload.hasAssetImage,
     });
@@ -202,6 +226,44 @@ generationRouter.post('/edit', async (req, res, next) => {
       error_message: error instanceof Error ? error.message : 'Unknown error',
     });
 
+    next(error);
+  }
+});
+
+generationRouter.post('/video', async (req, res, next) => {
+  try {
+    const payload = videoStartSchema.parse(req.body);
+    const job = await startVideoGeneration(payload);
+    res.status(202).json({ job });
+  } catch (error) {
+    next(error);
+  }
+});
+
+generationRouter.get('/video/status', async (req, res, next) => {
+  try {
+    const query = videoStatusQuerySchema.parse(req.query);
+    const job = await getVideoGenerationStatus(query.operationName, query.modelPreset);
+    res.json({ job });
+  } catch (error) {
+    next(error);
+  }
+});
+
+generationRouter.get('/video/download', async (req, res, next) => {
+  try {
+    const query = videoStatusQuerySchema.parse(req.query);
+    const { buffer, mimeType } = await downloadGeneratedVideo(query.operationName);
+
+    res.setHeader('Content-Type', mimeType);
+    res.setHeader('Content-Length', String(buffer.length));
+    res.setHeader(
+      'Content-Disposition',
+      `attachment; filename="social-studio-video-${Date.now()}.${mimeType.split('/')[1] || 'mp4'}"`
+    );
+    res.setHeader('Cache-Control', 'private, max-age=3600');
+    res.send(buffer);
+  } catch (error) {
     next(error);
   }
 });
