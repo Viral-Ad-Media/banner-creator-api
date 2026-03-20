@@ -11,6 +11,7 @@ import { healthRouter } from './routes/health.js';
 import { authRouter } from './routes/auth.js';
 import { projectRouter } from './routes/projects.js';
 import { generationRouter } from './routes/generations.js';
+import { avatarRouter } from './routes/avatars.js';
 import { billingRouter } from './routes/billing.js';
 
 export const app = express();
@@ -46,6 +47,7 @@ app.use('/api/auth', createRateLimiter({ windowMs: 60_000, max: 30 }));
 
 app.use('/api/health', healthRouter);
 app.use('/api/auth', authRouter);
+app.use('/api/avatars', avatarRouter);
 app.use('/api/projects', projectRouter);
 app.use('/api/generations', generationRouter);
 app.use('/api/billing', billingRouter);

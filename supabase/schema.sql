@@ -26,6 +26,17 @@ create table if not exists public.projects (
   updated_at timestamptz not null default now()
 );
 
+create table if not exists public.avatars (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references public.app_users (id) on delete cascade,
+  name text not null,
+  image_data_url text not null,
+  source text not null check (source in ('upload', 'generated')),
+  prompt text,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
 create table if not exists public.generations (
   id uuid primary key default gen_random_uuid(),
   user_id uuid not null references public.app_users (id) on delete cascade,
@@ -66,6 +77,9 @@ create table if not exists public.billing_customers (
 create index if not exists idx_projects_user_updated
   on public.projects (user_id, updated_at desc);
 
+create index if not exists idx_avatars_user_updated
+  on public.avatars (user_id, updated_at desc);
+
 create index if not exists idx_generations_user_created
   on public.generations (user_id, created_at desc);
 
@@ -97,6 +111,12 @@ before update on public.projects
 for each row
 execute function public.set_updated_at();
 
+drop trigger if exists trg_avatars_updated_at on public.avatars;
+create trigger trg_avatars_updated_at
+before update on public.avatars
+for each row
+execute function public.set_updated_at();
+
 drop trigger if exists trg_billing_customers_updated_at on public.billing_customers;
 create trigger trg_billing_customers_updated_at
 before update on public.billing_customers
@@ -105,6 +125,7 @@ execute function public.set_updated_at();
 
 alter table public.app_users enable row level security;
 alter table public.projects enable row level security;
+alter table public.avatars enable row level security;
 alter table public.generations enable row level security;
 alter table public.usage_events enable row level security;
 alter table public.billing_customers enable row level security;
@@ -150,6 +171,31 @@ with check (auth.uid() = user_id);
 drop policy if exists projects_delete_own on public.projects;
 create policy projects_delete_own
 on public.projects
+for delete
+using (auth.uid() = user_id);
+
+drop policy if exists avatars_select_own on public.avatars;
+create policy avatars_select_own
+on public.avatars
+for select
+using (auth.uid() = user_id);
+
+drop policy if exists avatars_insert_own on public.avatars;
+create policy avatars_insert_own
+on public.avatars
+for insert
+with check (auth.uid() = user_id);
+
+drop policy if exists avatars_update_own on public.avatars;
+create policy avatars_update_own
+on public.avatars
+for update
+using (auth.uid() = user_id)
+with check (auth.uid() = user_id);
+
+drop policy if exists avatars_delete_own on public.avatars;
+create policy avatars_delete_own
+on public.avatars
 for delete
 using (auth.uid() = user_id);
 
