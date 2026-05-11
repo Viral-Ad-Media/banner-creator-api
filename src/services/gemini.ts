@@ -1,9 +1,10 @@
 import { GenerateVideosOperation, GoogleGenAI, Modality, Schema, Type } from '@google/genai';
 import { env } from '../config/env.js';
+import type { TextGenerationProvider, VideoGenerationProvider } from '../types/domain.js';
 
 export type AspectRatio = '1:1' | '16:9' | '9:16' | '3:4' | '4:5';
 export type VideoAspectRatio = '16:9' | '9:16';
-export type VideoDurationSeconds = 4 | 6 | 8;
+export type VideoDurationSeconds = 4 | 5 | 6 | 8;
 export type VideoModelPreset = 'fast' | 'quality';
 
 export interface BannerRequest {
@@ -12,6 +13,7 @@ export interface BannerRequest {
   bannerCount?: number;
   hasBackgroundImage?: boolean;
   hasAssetImage?: boolean;
+  textProvider?: TextGenerationProvider;
 }
 
 export interface BannerPlan {
@@ -44,6 +46,7 @@ export interface VideoGenerationRequest {
   modelPreset?: VideoModelPreset;
   includeAudio?: boolean;
   sourceImageDataUrl?: string;
+  provider?: VideoGenerationProvider;
 }
 
 export interface VideoGenerationStatus {
@@ -53,13 +56,14 @@ export interface VideoGenerationStatus {
   errorMessage?: string;
   mimeType?: string;
   modelId?: string;
+  provider?: VideoGenerationProvider;
 }
 
 type BannerVariant = BannerPlan['additional_banners'][number];
 
-const DEFAULT_BANNER_COUNT = 3;
-const MIN_BANNER_COUNT = 1;
-const MAX_BANNER_COUNT = 6;
+export const DEFAULT_BANNER_COUNT = 3;
+export const MIN_BANNER_COUNT = 1;
+export const MAX_BANNER_COUNT = 6;
 
 let client: GoogleGenAI | null = null;
 
@@ -69,14 +73,14 @@ const getClient = () => {
   return client;
 };
 
-const extractResponseText = (response: any): string | undefined => {
+export const extractResponseText = (response: any): string | undefined => {
   if (typeof response?.text === 'function') return response.text();
   if (typeof response?.response?.text === 'function') return response.response.text();
   if (typeof response?.text === 'string') return response.text;
   return undefined;
 };
 
-const parseImageDataUrl = (imageDataUrl: string): { mimeType: string; data: string } => {
+export const parseImageDataUrl = (imageDataUrl: string): { mimeType: string; data: string } => {
   const match = imageDataUrl.match(/^data:(image\/[a-zA-Z0-9.+-]+);base64,([a-zA-Z0-9+/=\s]+)$/);
   if (!match) {
     throw new Error('Invalid image data URL format.');
@@ -88,7 +92,7 @@ const parseImageDataUrl = (imageDataUrl: string): { mimeType: string; data: stri
   };
 };
 
-const BANNER_SYSTEM_INSTRUCTION = `
+export const BANNER_SYSTEM_INSTRUCTION = `
 You are an Elite AI Creative Director and Social Media Strategist.
 Your goal is to design a high-quality, ready-to-render social media banner campaign based on the user's request.
 
@@ -110,7 +114,7 @@ Your goal is to design a high-quality, ready-to-render social media banner campa
 Return strict JSON with fields: main_banner, additional_banners, seo.
 `;
 
-const clampBannerCount = (value?: number) =>
+export const clampBannerCount = (value?: number) =>
   Math.max(MIN_BANNER_COUNT, Math.min(MAX_BANNER_COUNT, value ?? DEFAULT_BANNER_COUNT));
 
 const getVideoModelId = (preset: VideoModelPreset = 'fast') =>
@@ -155,6 +159,7 @@ const mapVideoStatus = (operation: GenerateVideosOperation, modelId?: string): V
         done: true,
         errorMessage: getVideoErrorMessage(operation.error),
         modelId,
+        provider: 'gemini',
       };
     }
 
@@ -165,6 +170,7 @@ const mapVideoStatus = (operation: GenerateVideosOperation, modelId?: string): V
         done: true,
         errorMessage: 'Video generation finished without a downloadable output.',
         modelId,
+        provider: 'gemini',
       };
     }
 
@@ -174,6 +180,7 @@ const mapVideoStatus = (operation: GenerateVideosOperation, modelId?: string): V
       done: true,
       mimeType: generatedVideo.mimeType || 'video/mp4',
       modelId,
+      provider: 'gemini',
     };
   }
 
@@ -182,6 +189,7 @@ const mapVideoStatus = (operation: GenerateVideosOperation, modelId?: string): V
     status: 'RUNNING',
     done: false,
     modelId,
+    provider: 'gemini',
   };
 };
 
@@ -193,7 +201,7 @@ const createFallbackVariant = (plan: BannerPlan, index: number): BannerVariant =
   cta: plan.main_banner.cta,
 });
 
-const normalizeBannerPlan = (plan: BannerPlan, bannerCount: number): BannerPlan => {
+export const normalizeBannerPlan = (plan: BannerPlan, bannerCount: number): BannerPlan => {
   const desiredAdditionalCount = Math.max(0, bannerCount - 1);
   const normalizedAdditional = (Array.isArray(plan.additional_banners) ? plan.additional_banners : []).slice(0, desiredAdditionalCount);
 
@@ -324,6 +332,7 @@ export const startVideoGeneration = async (request: VideoGenerationRequest): Pro
       status: 'PENDING',
       done: false,
       modelId,
+      provider: 'gemini',
     };
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Unable to start video generation.';

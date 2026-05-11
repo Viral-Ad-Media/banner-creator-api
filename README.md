@@ -1,6 +1,6 @@
 # Banner Creator Backend
 
-TypeScript + Express API for the Banner Creator app. This service handles authenticated app data, Gemini-powered generations, usage tracking, and mock billing flows.
+TypeScript + Express API for the Banner Creator app. This service handles authenticated app data, Gemini/OpenRouter-powered generations, usage tracking, and mock billing flows.
 
 ## Stack
 
@@ -10,6 +10,7 @@ TypeScript + Express API for the Banner Creator app. This service handles authen
 - TypeScript
 - Supabase
 - Gemini via `@google/genai`
+- OpenRouter via the OpenAI-compatible chat API and async video API
 - Zod
 
 ## Features
@@ -17,7 +18,7 @@ TypeScript + Express API for the Banner Creator app. This service handles authen
 - `GET /api/health` health check
 - Supabase token validation and profile bootstrap
 - Project CRUD endpoints
-- Banner plan, image generation, and image edit endpoints
+- Banner plan, image generation, image edit, and video generation endpoints
 - Monthly usage tracking by plan tier
 - Mock billing summary and checkout/portal routes
 - Centralized error handling and API rate limiting
@@ -53,18 +54,28 @@ cp .env.example .env
 
 Use raw values, not shell-style quoted assignments copied into the Vercel dashboard. For example, set `SUPABASE_URL` to `https://your-project-ref.supabase.co`, not `"https://your-project-ref.supabase.co"`.
 
-Required variables:
+Required variables and optional OpenRouter overrides:
 
 ```bash
 NODE_ENV=development
 PORT=4000
 GEMINI_API_KEY=your-gemini-api-key
+TEXT_GENERATION_PROVIDER=gemini
+OPENROUTER_API_KEY=your-openrouter-api-key
+OPENROUTER_BASE_URL=https://openrouter.ai/api/v1
+OPENROUTER_TEXT_MODEL=openai/gpt-5.2
+OPENROUTER_VIDEO_MODEL_FAST=google/veo-3.1
+OPENROUTER_VIDEO_MODEL_QUALITY=google/veo-3.1
+OPENROUTER_APP_URL=http://localhost:3000
+OPENROUTER_APP_NAME=Social Studio
 CORS_ORIGIN=http://localhost:3000
 SUPABASE_URL=https://your-project-ref.supabase.co
 SUPABASE_SERVICE_ROLE_KEY=your-supabase-service-role-key
 ```
 
 `CORS_ORIGIN` accepts a comma-separated list, so you can allow local development and Vercel at the same time. Example: `http://localhost:3000,https://your-web.vercel.app`.
+
+OpenRouter is optional unless you choose it in the app or set `TEXT_GENERATION_PROVIDER=openrouter`. OpenRouter API keys stay server-side; the frontend only sends provider names.
 
 ## Local Development
 
@@ -111,6 +122,9 @@ Base path: `/api`
 - `POST /generations/plan`
 - `POST /generations/image`
 - `POST /generations/edit`
+- `POST /generations/video`
+- `GET /generations/video/status`
+- `GET /generations/video/download`
 - `GET /billing/summary`
 - `POST /billing/checkout-session`
 - `POST /billing/portal-session`
@@ -137,6 +151,14 @@ Required Vercel environment variables:
 - `NODE_ENV=production`
 - `PORT=4000`
 - `GEMINI_API_KEY=...`
+- `TEXT_GENERATION_PROVIDER=gemini`
+- `OPENROUTER_API_KEY=...` if using OpenRouter
+- `OPENROUTER_BASE_URL=https://openrouter.ai/api/v1`
+- `OPENROUTER_TEXT_MODEL=openai/gpt-5.2`
+- `OPENROUTER_VIDEO_MODEL_FAST=google/veo-3.1`
+- `OPENROUTER_VIDEO_MODEL_QUALITY=google/veo-3.1`
+- `OPENROUTER_APP_URL=https://your-frontend-domain.vercel.app`
+- `OPENROUTER_APP_NAME=Social Studio`
 - `CORS_ORIGIN=https://your-frontend-domain.vercel.app`
 - `SUPABASE_URL=...`
 - `SUPABASE_SERVICE_ROLE_KEY=...`

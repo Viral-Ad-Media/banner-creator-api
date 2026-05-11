@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { supabaseAdmin } from '../db/supabase.js';
+import { env } from '../config/env.js';
 import { requireAuth } from '../middleware/auth.js';
 import { ApiError } from '../middleware/error.js';
 import { assertCreditsAvailable, getUsageSummary, trackUsage } from '../lib/usage.js';
@@ -12,10 +13,18 @@ import {
   getVideoGenerationStatus,
   startVideoGeneration,
 } from '../services/gemini.js';
+import {
+  downloadOpenRouterGeneratedVideo,
+  generateBannerPlanWithOpenRouter,
+  getOpenRouterVideoGenerationStatus,
+  startOpenRouterVideoGeneration,
+} from '../services/openrouter.js';
 import type { GenerationStatus, GenerationType } from '../types/domain.js';
 
 const aspectRatioSchema = z.enum(['1:1', '16:9', '9:16', '3:4', '4:5']);
 const videoAspectRatioSchema = z.enum(['16:9', '9:16']);
+const textProviderSchema = z.enum(['gemini', 'openrouter']);
+const videoProviderSchema = z.enum(['gemini', 'openrouter']);
 
 const planSchema = z.object({
   userPrompt: z.string().trim().min(3).max(5000),
@@ -23,6 +32,7 @@ const planSchema = z.object({
   bannerCount: z.number().int().min(1).max(6).optional(),
   hasBackgroundImage: z.boolean().optional(),
   hasAssetImage: z.boolean().optional(),
+  textProvider: textProviderSchema.optional(),
   projectId: z.string().uuid().optional(),
 });
 
@@ -43,15 +53,17 @@ const videoStartSchema = z.object({
   prompt: z.string().trim().min(10).max(5000),
   negativePrompt: z.string().trim().max(1000).optional(),
   aspectRatio: videoAspectRatioSchema.default('16:9'),
-  durationSeconds: z.union([z.literal(4), z.literal(6), z.literal(8)]).default(4),
+  durationSeconds: z.union([z.literal(4), z.literal(5), z.literal(6), z.literal(8)]).optional(),
   modelPreset: z.enum(['fast', 'quality']).default('fast'),
   includeAudio: z.boolean().optional(),
   sourceImageDataUrl: z.string().min(30).optional(),
+  provider: videoProviderSchema.default('gemini'),
 });
 
 const videoStatusQuerySchema = z.object({
   operationName: z.string().trim().min(1),
   modelPreset: z.enum(['fast', 'quality']).optional(),
+  provider: videoProviderSchema.default('gemini'),
 });
 
 const generationRouter = Router();
@@ -91,6 +103,11 @@ const insertGeneration = async (params: {
   return data;
 };
 
+const sanitizeVideoInput = (input: z.infer<typeof videoStartSchema>) => ({
+  ...input,
+  sourceImageDataUrl: input.sourceImageDataUrl ? '[image-data-url]' : undefined,
+});
+
 generationRouter.get('/', async (req, res, next) => {
   try {
     const { data: generations, error } = await supabaseAdmin
@@ -116,14 +133,20 @@ generationRouter.post('/plan', async (req, res, next) => {
   try {
     const payload = planSchema.parse(req.body);
     await assertCreditsAvailable(userId, req.auth!.plan, 'BANNER_PLAN');
+    const textProvider = payload.textProvider ?? env.TEXT_GENERATION_PROVIDER;
 
-    const result = await generateBannerPlan({
+    const request = {
       userPrompt: payload.userPrompt,
       aspectRatio: payload.aspectRatio,
       bannerCount: payload.bannerCount,
       hasBackgroundImage: payload.hasBackgroundImage,
       hasAssetImage: payload.hasAssetImage,
-    });
+      textProvider,
+    };
+    const result =
+      textProvider === 'openrouter'
+        ? await generateBannerPlanWithOpenRouter(request)
+        : await generateBannerPlan(request);
 
     const generation = await insertGeneration({
       userId,
@@ -132,8 +155,8 @@ generationRouter.post('/plan', async (req, res, next) => {
       status: 'SUCCESS',
       prompt: payload.userPrompt,
       aspectRatio: payload.aspectRatio,
-      input: payload,
-      result,
+      input: { ...payload, textProvider },
+      result: { ...result, provider: textProvider },
     });
 
     await trackUsage(userId, 'BANNER_PLAN');
@@ -232,11 +255,44 @@ generationRouter.post('/edit', async (req, res, next) => {
 });
 
 generationRouter.post('/video', async (req, res, next) => {
+  const userId = req.auth!.userId;
   try {
     const payload = videoStartSchema.parse(req.body);
-    const job = await startVideoGeneration(payload);
-    res.status(202).json({ job });
+    await assertCreditsAvailable(userId, req.auth!.plan, 'VIDEO_GENERATION');
+
+    const job =
+      payload.provider === 'openrouter'
+        ? await startOpenRouterVideoGeneration(payload)
+        : await startVideoGeneration(payload);
+
+    const generation = await insertGeneration({
+      userId,
+      type: 'VIDEO_GENERATION',
+      status: 'SUCCESS',
+      prompt: payload.prompt,
+      aspectRatio: payload.aspectRatio,
+      input: sanitizeVideoInput(payload),
+      result: { job },
+    });
+
+    await trackUsage(userId, 'VIDEO_GENERATION');
+    const usage = await getUsageSummary(userId, req.auth!.plan);
+
+    res.status(202).json({ job, generation, usage });
   } catch (error) {
+    await supabaseAdmin.from('generations').insert({
+      user_id: userId,
+      type: 'VIDEO_GENERATION',
+      status: 'FAILED',
+      prompt: String(req.body?.prompt ?? 'Unknown prompt'),
+      aspect_ratio: req.body?.aspectRatio,
+      input: {
+        ...req.body,
+        sourceImageDataUrl: req.body?.sourceImageDataUrl ? '[image-data-url]' : undefined,
+      },
+      error_message: error instanceof Error ? error.message : 'Unknown error',
+    });
+
     next(error);
   }
 });
@@ -244,7 +300,10 @@ generationRouter.post('/video', async (req, res, next) => {
 generationRouter.get('/video/status', async (req, res, next) => {
   try {
     const query = videoStatusQuerySchema.parse(req.query);
-    const job = await getVideoGenerationStatus(query.operationName, query.modelPreset);
+    const job =
+      query.provider === 'openrouter'
+        ? await getOpenRouterVideoGenerationStatus(query.operationName, query.modelPreset)
+        : await getVideoGenerationStatus(query.operationName, query.modelPreset);
     res.json({ job });
   } catch (error) {
     next(error);
@@ -254,7 +313,10 @@ generationRouter.get('/video/status', async (req, res, next) => {
 generationRouter.get('/video/download', async (req, res, next) => {
   try {
     const query = videoStatusQuerySchema.parse(req.query);
-    const { buffer, mimeType } = await downloadGeneratedVideo(query.operationName);
+    const { buffer, mimeType } =
+      query.provider === 'openrouter'
+        ? await downloadOpenRouterGeneratedVideo(query.operationName, query.modelPreset)
+        : await downloadGeneratedVideo(query.operationName);
 
     res.setHeader('Content-Type', mimeType);
     res.setHeader('Content-Length', String(buffer.length));

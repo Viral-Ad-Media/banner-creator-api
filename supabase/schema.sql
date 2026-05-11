@@ -41,7 +41,7 @@ create table if not exists public.generations (
   id uuid primary key default gen_random_uuid(),
   user_id uuid not null references public.app_users (id) on delete cascade,
   project_id uuid references public.projects (id) on delete set null,
-  type text not null check (type in ('BANNER_PLAN', 'IMAGE_GENERATION', 'IMAGE_EDIT')),
+  type text not null check (type in ('BANNER_PLAN', 'IMAGE_GENERATION', 'IMAGE_EDIT', 'VIDEO_GENERATION')),
   status text not null check (status in ('SUCCESS', 'FAILED')),
   prompt text not null,
   aspect_ratio text check (
@@ -57,7 +57,7 @@ create table if not exists public.generations (
 create table if not exists public.usage_events (
   id uuid primary key default gen_random_uuid(),
   user_id uuid not null references public.app_users (id) on delete cascade,
-  kind text not null check (kind in ('BANNER_PLAN', 'IMAGE_GENERATION', 'IMAGE_EDIT')),
+  kind text not null check (kind in ('BANNER_PLAN', 'IMAGE_GENERATION', 'IMAGE_EDIT', 'VIDEO_GENERATION')),
   credits integer not null check (credits > 0),
   created_at timestamptz not null default now()
 );
@@ -88,6 +88,20 @@ create index if not exists idx_generations_project_created
 
 create index if not exists idx_usage_events_user_created
   on public.usage_events (user_id, created_at desc);
+
+alter table public.generations
+  drop constraint if exists generations_type_check;
+
+alter table public.generations
+  add constraint generations_type_check
+  check (type in ('BANNER_PLAN', 'IMAGE_GENERATION', 'IMAGE_EDIT', 'VIDEO_GENERATION'));
+
+alter table public.usage_events
+  drop constraint if exists usage_events_kind_check;
+
+alter table public.usage_events
+  add constraint usage_events_kind_check
+  check (kind in ('BANNER_PLAN', 'IMAGE_GENERATION', 'IMAGE_EDIT', 'VIDEO_GENERATION'));
 
 create or replace function public.set_updated_at()
 returns trigger

@@ -7,6 +7,7 @@ const CREDIT_COST: Record<GenerationType, number> = {
   BANNER_PLAN: 3,
   IMAGE_GENERATION: 5,
   IMAGE_EDIT: 5,
+  VIDEO_GENERATION: 25,
 };
 
 const startOfCurrentMonth = () => {
