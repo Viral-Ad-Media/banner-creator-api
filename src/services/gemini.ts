@@ -1,11 +1,26 @@
-import { GenerateVideosOperation, GoogleGenAI, Modality, Schema, Type } from '@google/genai';
-import { env } from '../config/env.js';
-import type { TextGenerationProvider, VideoGenerationProvider } from '../types/domain.js';
+import { ApiError } from "../middleware/error.js";
+import { bannerPlanSchema } from "../lib/validation.js";
+import {
+  downloadVideo,
+  remainingProviderTimeout,
+} from "../lib/providerFetch.js";
+import {
+  GenerateVideosOperation,
+  GoogleGenAI,
+  Modality,
+  Schema,
+  Type,
+} from "@google/genai";
+import { env } from "../config/env.js";
+import type {
+  TextGenerationProvider,
+  VideoGenerationProvider,
+} from "../types/domain.js";
 
-export type AspectRatio = '1:1' | '16:9' | '9:16' | '3:4' | '4:5';
-export type VideoAspectRatio = '16:9' | '9:16';
+export type AspectRatio = "1:1" | "16:9" | "9:16" | "3:4" | "4:5";
+export type VideoAspectRatio = "16:9" | "9:16";
 export type VideoDurationSeconds = 4 | 5 | 6 | 8;
-export type VideoModelPreset = 'fast' | 'quality';
+export type VideoModelPreset = "fast" | "quality";
 
 export interface BannerRequest {
   userPrompt: string;
@@ -51,7 +66,7 @@ export interface VideoGenerationRequest {
 
 export interface VideoGenerationStatus {
   operationName: string;
-  status: 'PENDING' | 'RUNNING' | 'SUCCEEDED' | 'FAILED';
+  status: "PENDING" | "RUNNING" | "SUCCEEDED" | "FAILED";
   done: boolean;
   errorMessage?: string;
   mimeType?: string;
@@ -59,36 +74,45 @@ export interface VideoGenerationStatus {
   provider?: VideoGenerationProvider;
 }
 
-type BannerVariant = BannerPlan['additional_banners'][number];
+type BannerVariant = BannerPlan["additional_banners"][number];
 
 export const DEFAULT_BANNER_COUNT = 3;
 export const MIN_BANNER_COUNT = 1;
 export const MAX_BANNER_COUNT = 6;
 
-let client: GoogleGenAI | null = null;
-
-const getClient = () => {
-  if (client) return client;
-  client = new GoogleGenAI({ apiKey: env.GEMINI_API_KEY });
-  return client;
-};
+const getClient = () =>
+  new GoogleGenAI({
+    apiKey: env.GEMINI_API_KEY,
+    httpOptions: {
+      timeout: remainingProviderTimeout(),
+      retryOptions: { attempts: 1 },
+    },
+  });
 
 export const extractResponseText = (response: any): string | undefined => {
-  if (typeof response?.text === 'function') return response.text();
-  if (typeof response?.response?.text === 'function') return response.response.text();
-  if (typeof response?.text === 'string') return response.text;
+  if (typeof response?.text === "function") return response.text();
+  if (typeof response?.response?.text === "function")
+    return response.response.text();
+  if (typeof response?.text === "string") return response.text;
   return undefined;
 };
 
-export const parseImageDataUrl = (imageDataUrl: string): { mimeType: string; data: string } => {
-  const match = imageDataUrl.match(/^data:(image\/[a-zA-Z0-9.+-]+);base64,([a-zA-Z0-9+/=\s]+)$/);
+export const parseImageDataUrl = (
+  imageDataUrl: string,
+): { mimeType: string; data: string } => {
+  const match = imageDataUrl.match(
+    /^data:(image\/[a-zA-Z0-9.+-]+);base64,([a-zA-Z0-9+/=\s]+)$/,
+  );
   if (!match) {
-    throw new Error('Invalid image data URL format.');
+    throw new Error("Invalid image data URL format.");
   }
 
   return {
-    mimeType: match[1].toLowerCase() === 'image/jpg' ? 'image/jpeg' : match[1].toLowerCase(),
-    data: match[2].replace(/\s/g, ''),
+    mimeType:
+      match[1].toLowerCase() === "image/jpg"
+        ? "image/jpeg"
+        : match[1].toLowerCase(),
+    data: match[2].replace(/\s/g, ""),
   };
 };
 
@@ -115,23 +139,28 @@ Return strict JSON with fields: main_banner, additional_banners, seo.
 `;
 
 export const clampBannerCount = (value?: number) =>
-  Math.max(MIN_BANNER_COUNT, Math.min(MAX_BANNER_COUNT, value ?? DEFAULT_BANNER_COUNT));
+  Math.max(
+    MIN_BANNER_COUNT,
+    Math.min(MAX_BANNER_COUNT, value ?? DEFAULT_BANNER_COUNT),
+  );
 
-const getVideoModelId = (preset: VideoModelPreset = 'fast') =>
-  preset === 'quality' ? 'veo-3.1-generate-preview' : 'veo-3.1-fast-generate-preview';
+const getVideoModelId = (preset: VideoModelPreset = "fast") =>
+  preset === "quality"
+    ? "veo-3.1-generate-preview"
+    : "veo-3.1-fast-generate-preview";
 
 const getVideoErrorMessage = (error: Record<string, unknown> | undefined) => {
   if (!error) return undefined;
 
-  if (typeof error.message === 'string' && error.message.trim()) {
+  if (typeof error.message === "string" && error.message.trim()) {
     return error.message;
   }
 
-  if (typeof error.details === 'string' && error.details.trim()) {
+  if (typeof error.details === "string" && error.details.trim()) {
     return error.details;
   }
 
-  return 'Video generation failed.';
+  return "Video generation failed.";
 };
 
 const buildVideoOperation = (operationName: string) => {
@@ -148,52 +177,59 @@ const getVideoOperationStatus = async (operationName: string) => {
   return operation;
 };
 
-const mapVideoStatus = (operation: GenerateVideosOperation, modelId?: string): VideoGenerationStatus => {
+const mapVideoStatus = (
+  operation: GenerateVideosOperation,
+  modelId?: string,
+): VideoGenerationStatus => {
   if (operation.done) {
     const generatedVideo = operation.response?.generatedVideos?.[0]?.video;
 
     if (operation.error) {
       return {
-        operationName: operation.name || '',
-        status: 'FAILED',
+        operationName: operation.name || "",
+        status: "FAILED",
         done: true,
         errorMessage: getVideoErrorMessage(operation.error),
         modelId,
-        provider: 'gemini',
+        provider: "gemini",
       };
     }
 
     if (!generatedVideo?.uri && !generatedVideo?.videoBytes) {
       return {
-        operationName: operation.name || '',
-        status: 'FAILED',
+        operationName: operation.name || "",
+        status: "FAILED",
         done: true,
-        errorMessage: 'Video generation finished without a downloadable output.',
+        errorMessage:
+          "Video generation finished without a downloadable output.",
         modelId,
-        provider: 'gemini',
+        provider: "gemini",
       };
     }
 
     return {
-      operationName: operation.name || '',
-      status: 'SUCCEEDED',
+      operationName: operation.name || "",
+      status: "SUCCEEDED",
       done: true,
-      mimeType: generatedVideo.mimeType || 'video/mp4',
+      mimeType: generatedVideo.mimeType || "video/mp4",
       modelId,
-      provider: 'gemini',
+      provider: "gemini",
     };
   }
 
   return {
-    operationName: operation.name || '',
-    status: 'RUNNING',
+    operationName: operation.name || "",
+    status: "RUNNING",
     done: false,
     modelId,
-    provider: 'gemini',
+    provider: "gemini",
   };
 };
 
-const createFallbackVariant = (plan: BannerPlan, index: number): BannerVariant => ({
+const createFallbackVariant = (
+  plan: BannerPlan,
+  index: number,
+): BannerVariant => ({
   title: `${plan.main_banner.headline} ${index + 2}`,
   subtitle: plan.main_banner.subheadline,
   image_prompt: plan.main_banner.image_prompt,
@@ -201,12 +237,19 @@ const createFallbackVariant = (plan: BannerPlan, index: number): BannerVariant =
   cta: plan.main_banner.cta,
 });
 
-export const normalizeBannerPlan = (plan: BannerPlan, bannerCount: number): BannerPlan => {
+export const normalizeBannerPlan = (
+  plan: BannerPlan,
+  bannerCount: number,
+): BannerPlan => {
   const desiredAdditionalCount = Math.max(0, bannerCount - 1);
-  const normalizedAdditional = (Array.isArray(plan.additional_banners) ? plan.additional_banners : []).slice(0, desiredAdditionalCount);
+  const normalizedAdditional = (
+    Array.isArray(plan.additional_banners) ? plan.additional_banners : []
+  ).slice(0, desiredAdditionalCount);
 
   while (normalizedAdditional.length < desiredAdditionalCount) {
-    const fallback = normalizedAdditional[normalizedAdditional.length - 1] ?? createFallbackVariant(plan, normalizedAdditional.length);
+    const fallback =
+      normalizedAdditional[normalizedAdditional.length - 1] ??
+      createFallbackVariant(plan, normalizedAdditional.length);
     normalizedAdditional.push({
       title: fallback.title || plan.main_banner.headline,
       subtitle: fallback.subtitle || plan.main_banner.subheadline,
@@ -222,7 +265,9 @@ export const normalizeBannerPlan = (plan: BannerPlan, bannerCount: number): Bann
   };
 };
 
-export const generateBannerPlan = async (request: BannerRequest): Promise<BannerPlan> => {
+export const generateBannerPlan = async (
+  request: BannerRequest,
+): Promise<BannerPlan> => {
   const bannerCount = clampBannerCount(request.bannerCount);
   const prompt = `
 User Prompt: ${request.userPrompt}
@@ -233,11 +278,11 @@ Has Asset Upload: ${request.hasAssetImage}
 `;
 
   const response = await getClient().models.generateContent({
-    model: 'gemini-2.5-flash',
+    model: "gemini-2.5-flash",
     contents: prompt,
     config: {
       systemInstruction: BANNER_SYSTEM_INSTRUCTION,
-      responseMimeType: 'application/json',
+      responseMimeType: "application/json",
       temperature: 0.5,
       maxOutputTokens: 8192,
       responseSchema: {
@@ -252,7 +297,13 @@ Has Asset Upload: ${request.hasAssetImage}
               description: { type: Type.STRING },
               cta: { type: Type.STRING },
             },
-            required: ['headline', 'subheadline', 'image_prompt', 'description', 'cta'],
+            required: [
+              "headline",
+              "subheadline",
+              "image_prompt",
+              "description",
+              "cta",
+            ],
           },
           additional_banners: {
             type: Type.ARRAY,
@@ -265,7 +316,13 @@ Has Asset Upload: ${request.hasAssetImage}
                 description: { type: Type.STRING },
                 cta: { type: Type.STRING },
               },
-              required: ['title', 'subtitle', 'image_prompt', 'description', 'cta'],
+              required: [
+                "title",
+                "subtitle",
+                "image_prompt",
+                "description",
+                "cta",
+              ],
             },
           },
           seo: {
@@ -275,28 +332,33 @@ Has Asset Upload: ${request.hasAssetImage}
               hashtags: { type: Type.ARRAY, items: { type: Type.STRING } },
               keywords: { type: Type.ARRAY, items: { type: Type.STRING } },
             },
-            required: ['caption', 'hashtags', 'keywords'],
+            required: ["caption", "hashtags", "keywords"],
           },
         },
-        required: ['main_banner', 'additional_banners', 'seo'],
+        required: ["main_banner", "additional_banners", "seo"],
       } as Schema,
     },
   });
 
   const rawText = extractResponseText(response);
   if (!rawText) {
-    throw new Error('No banner plan returned from Gemini.');
+    throw new Error("No banner plan returned from Gemini.");
   }
 
   try {
-    const jsonText = rawText.replace(/```json\n?|\n?```/g, '').trim();
-    return normalizeBannerPlan(JSON.parse(jsonText) as BannerPlan, bannerCount);
+    const jsonText = rawText.replace(/```json\n?|\n?```/g, "").trim();
+    return normalizeBannerPlan(
+      bannerPlanSchema.parse(JSON.parse(jsonText)),
+      bannerCount,
+    );
   } catch {
-    throw new Error('Invalid JSON returned for banner plan.');
+    throw new Error("Invalid JSON returned for banner plan.");
   }
 };
 
-export const startVideoGeneration = async (request: VideoGenerationRequest): Promise<VideoGenerationStatus> => {
+export const startVideoGeneration = async (
+  request: VideoGenerationRequest,
+): Promise<VideoGenerationStatus> => {
   const modelId = getVideoModelId(request.modelPreset);
   const sourceImage = request.sourceImageDataUrl
     ? (() => {
@@ -315,36 +377,39 @@ export const startVideoGeneration = async (request: VideoGenerationRequest): Pro
       ...(sourceImage ? { image: sourceImage } : {}),
       config: {
         numberOfVideos: 1,
-        aspectRatio: request.aspectRatio || '16:9',
+        aspectRatio: request.aspectRatio || "16:9",
         durationSeconds: request.durationSeconds || 4,
-        resolution: '720p',
+        resolution: "720p",
         negativePrompt: request.negativePrompt,
         generateAudio: request.includeAudio ?? false,
       },
     });
 
     if (!operation.name) {
-      throw new Error('Video generation did not return an operation name.');
+      throw new Error("Video generation did not return an operation name.");
     }
 
     return {
       operationName: operation.name,
-      status: 'PENDING',
+      status: "PENDING",
       done: false,
       modelId,
-      provider: 'gemini',
+      provider: "gemini",
     };
   } catch (error) {
-    const message = error instanceof Error ? error.message : 'Unable to start video generation.';
+    const message =
+      error instanceof Error
+        ? error.message
+        : "Unable to start video generation.";
     throw new Error(
-      `${message} Veo generation requires Gemini API access to the selected video model.`
+      `${message} Veo generation requires Gemini API access to the selected video model.`,
     );
   }
 };
 
 export const getVideoGenerationStatus = async (
   operationName: string,
-  modelPreset?: VideoModelPreset
+  modelPreset?: VideoModelPreset,
 ): Promise<VideoGenerationStatus> => {
   const modelId = getVideoModelId(modelPreset);
   const operation = await getVideoOperationStatus(operationName);
@@ -352,62 +417,58 @@ export const getVideoGenerationStatus = async (
 };
 
 export const downloadGeneratedVideo = async (
-  operationName: string
+  operationName: string,
 ): Promise<{ buffer: Buffer; mimeType: string }> => {
   const operation = await getVideoOperationStatus(operationName);
   const status = mapVideoStatus(operation);
 
-  if (status.status === 'FAILED') {
-    throw new Error(status.errorMessage || 'Video generation failed.');
+  if (status.status === "FAILED") {
+    throw new Error(status.errorMessage || "Video generation failed.");
   }
 
   if (!status.done) {
-    throw new Error('Video is still generating. Please wait for completion before downloading.');
+    throw new Error(
+      "Video is still generating. Please wait for completion before downloading.",
+    );
   }
 
   const generatedVideo = operation.response?.generatedVideos?.[0]?.video;
   if (!generatedVideo) {
-    throw new Error('Generated video file was not found.');
+    throw new Error("Generated video file was not found.");
   }
 
   if (generatedVideo.videoBytes) {
+    if (generatedVideo.videoBytes.length > Math.ceil(4_000_000 / 3) * 4)
+      throw new ApiError(
+        413,
+        "Video exceeds the 4 MB download limit. Use a shorter clip.",
+      );
     return {
-      buffer: Buffer.from(generatedVideo.videoBytes, 'base64'),
-      mimeType: generatedVideo.mimeType || 'video/mp4',
+      buffer: Buffer.from(generatedVideo.videoBytes, "base64"),
+      mimeType: generatedVideo.mimeType || "video/mp4",
     };
   }
 
   if (!generatedVideo.uri) {
-    throw new Error('Generated video is missing a download URL.');
+    throw new Error("Generated video is missing a download URL.");
   }
 
-  const response = await fetch(generatedVideo.uri, {
-    headers: {
-      'x-goog-api-key': env.GEMINI_API_KEY,
-    },
-    redirect: 'follow',
-  });
-
-  if (!response.ok) {
-    throw new Error(`Failed to download generated video: ${response.status} ${response.statusText}`);
-  }
-
-  const arrayBuffer = await response.arrayBuffer();
-  return {
-    buffer: Buffer.from(arrayBuffer),
-    mimeType: response.headers.get('content-type') || generatedVideo.mimeType || 'video/mp4',
-  };
+  return downloadVideo(
+    generatedVideo.uri,
+    { "x-goog-api-key": env.GEMINI_API_KEY },
+    "generativelanguage.googleapis.com",
+  );
 };
 
 export const generateImage = async (
   prompt: string,
   aspectRatio: AspectRatio,
-  referenceImages: string[] = []
+  referenceImages: string[] = [],
 ): Promise<string> => {
-  if (!prompt) throw new Error('Image prompt is required.');
+  if (!prompt) throw new Error("Image prompt is required.");
 
-  if (prompt.toLowerCase().includes('user provided background')) {
-    return referenceImages[0] || '';
+  if (prompt.toLowerCase().includes("user provided background")) {
+    return referenceImages[0] || "";
   }
 
   const executeGen = async (promptText: string) => {
@@ -426,25 +487,28 @@ export const generateImage = async (
           return null;
         }
       })
-      .filter((part): part is { inlineData: { mimeType: string; data: string } } => part !== null);
+      .filter(
+        (part): part is { inlineData: { mimeType: string; data: string } } =>
+          part !== null,
+      );
 
     const response = await getClient().models.generateContent({
-      model: 'gemini-2.5-flash-image',
+      model: "gemini-2.5-flash-image",
       contents: [{ text: promptText }, ...referenceParts],
       config: {
         responseModalities: [Modality.TEXT, Modality.IMAGE],
         imageConfig: {
-          aspectRatio: aspectRatio === '4:5' ? '3:4' : aspectRatio,
+          aspectRatio: aspectRatio === "4:5" ? "3:4" : aspectRatio,
         },
       },
     });
 
     const outputParts = response.candidates?.[0]?.content?.parts;
-    if (!outputParts) throw new Error('No image content generated.');
+    if (!outputParts) throw new Error("No image content generated.");
 
     for (const part of outputParts) {
       if (part.inlineData?.data) {
-        return `data:${part.inlineData.mimeType || 'image/png'};base64,${part.inlineData.data}`;
+        return `data:${part.inlineData.mimeType || "image/png"};base64,${part.inlineData.data}`;
       }
     }
 
@@ -453,32 +517,24 @@ export const generateImage = async (
       throw new Error(textPart.text);
     }
 
-    throw new Error('No image data returned by model.');
+    throw new Error("No image data returned by model.");
   };
 
-  try {
-    return await executeGen(
-      `Professional photography, ${prompt}. Cinematic lighting, highly detailed, premium quality, clean background.`
-    );
-  } catch (error) {
-    const fallbackError = error instanceof Error ? error : new Error('Primary image generation attempt failed.');
-
-    try {
-      return await executeGen(`Artistic illustration, ${prompt}. Minimalist, abstract, high quality.`);
-    } catch (fallback) {
-      const fallbackMessage = fallback instanceof Error ? fallback.message : 'Fallback image generation attempt failed.';
-      throw new Error(`Image generation failed. ${fallbackMessage} Primary attempt: ${fallbackError.message}`);
-    }
-  }
+  return executeGen(
+    `Professional photography, ${prompt}. Cinematic lighting, highly detailed, premium quality, clean background.`,
+  );
 };
 
-export const editImage = async (base64Image: string, prompt: string): Promise<string> => {
-  if (!prompt.trim()) throw new Error('Edit prompt is required.');
+export const editImage = async (
+  base64Image: string,
+  prompt: string,
+): Promise<string> => {
+  if (!prompt.trim()) throw new Error("Edit prompt is required.");
 
   const parsedImage = parseImageDataUrl(base64Image);
 
   const response = await getClient().models.generateContent({
-    model: 'gemini-2.5-flash-image',
+    model: "gemini-2.5-flash-image",
     contents: [
       { text: prompt },
       {
@@ -494,11 +550,11 @@ export const editImage = async (base64Image: string, prompt: string): Promise<st
   });
 
   const parts = response.candidates?.[0]?.content?.parts;
-  if (!parts) throw new Error('No edited output returned by model.');
+  if (!parts) throw new Error("No edited output returned by model.");
 
   for (const part of parts) {
     if (part.inlineData?.data) {
-      return `data:${part.inlineData.mimeType || 'image/png'};base64,${part.inlineData.data}`;
+      return `data:${part.inlineData.mimeType || "image/png"};base64,${part.inlineData.data}`;
     }
   }
 
@@ -507,5 +563,5 @@ export const editImage = async (base64Image: string, prompt: string): Promise<st
     throw new Error(`Model did not return an image: ${textPart.text}`);
   }
 
-  throw new Error('No image data found in edit response.');
+  throw new Error("No image data found in edit response.");
 };

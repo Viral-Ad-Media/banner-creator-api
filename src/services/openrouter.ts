@@ -1,4 +1,6 @@
-import { env } from '../config/env.js';
+import { bannerPlanSchema } from "../lib/validation.js";
+import { providerFetch, downloadVideo } from "../lib/providerFetch.js";
+import { env } from "../config/env.js";
 import {
   BANNER_SYSTEM_INSTRUCTION,
   clampBannerCount,
@@ -9,7 +11,7 @@ import {
   type VideoGenerationRequest,
   type VideoGenerationStatus,
   type VideoModelPreset,
-} from './gemini.js';
+} from "./gemini.js";
 
 type OpenRouterChatCompletion = {
   choices?: Array<{
@@ -28,11 +30,13 @@ type OpenRouterVideoJob = {
   model?: string | null;
 };
 
-const getBaseUrl = () => env.OPENROUTER_BASE_URL.replace(/\/+$/, '');
+const getBaseUrl = () => env.OPENROUTER_BASE_URL.replace(/\/+$/, "");
 
 const requireOpenRouterApiKey = () => {
   if (!env.OPENROUTER_API_KEY) {
-    throw new Error('OpenRouter is selected, but OPENROUTER_API_KEY is not configured on the backend.');
+    throw new Error(
+      "OpenRouter is selected, but OPENROUTER_API_KEY is not configured on the backend.",
+    );
   }
 
   return env.OPENROUTER_API_KEY;
@@ -41,15 +45,15 @@ const requireOpenRouterApiKey = () => {
 const getOpenRouterHeaders = (includeJson = true): HeadersInit => {
   const headers: Record<string, string> = {
     Authorization: `Bearer ${requireOpenRouterApiKey()}`,
-    'X-OpenRouter-Title': env.OPENROUTER_APP_NAME,
+    "X-OpenRouter-Title": env.OPENROUTER_APP_NAME,
   };
 
   if (includeJson) {
-    headers['Content-Type'] = 'application/json';
+    headers["Content-Type"] = "application/json";
   }
 
   if (env.OPENROUTER_APP_URL) {
-    headers['HTTP-Referer'] = env.OPENROUTER_APP_URL;
+    headers["HTTP-Referer"] = env.OPENROUTER_APP_URL;
   }
 
   return headers;
@@ -67,18 +71,18 @@ const readResponsePayload = async (response: Response) => {
 };
 
 const getPayloadErrorMessage = (payload: unknown) => {
-  if (typeof payload === 'string' && payload.trim()) return payload;
-  if (!payload || typeof payload !== 'object') return undefined;
+  if (typeof payload === "string" && payload.trim()) return payload;
+  if (!payload || typeof payload !== "object") return undefined;
 
   const error = (payload as { error?: unknown }).error;
-  if (typeof error === 'string' && error.trim()) return error;
-  if (error && typeof error === 'object') {
+  if (typeof error === "string" && error.trim()) return error;
+  if (error && typeof error === "object") {
     const message = (error as { message?: unknown }).message;
-    if (typeof message === 'string' && message.trim()) return message;
+    if (typeof message === "string" && message.trim()) return message;
   }
 
   const message = (payload as { message?: unknown }).message;
-  if (typeof message === 'string' && message.trim()) return message;
+  if (typeof message === "string" && message.trim()) return message;
 
   return undefined;
 };
@@ -86,9 +90,9 @@ const getPayloadErrorMessage = (payload: unknown) => {
 const openRouterFetchJson = async <T>(
   path: string,
   options: RequestInit = {},
-  acceptedStatuses: number[] = [200]
+  acceptedStatuses: number[] = [200],
 ) => {
-  const response = await fetch(`${getBaseUrl()}${path}`, {
+  const response = await providerFetch(`${getBaseUrl()}${path}`, {
     ...options,
     headers: {
       ...getOpenRouterHeaders(options.body !== undefined),
@@ -98,10 +102,15 @@ const openRouterFetchJson = async <T>(
   const payload = await readResponsePayload(response);
 
   if (!acceptedStatuses.includes(response.status)) {
-    throw new Error(
+    const error = new Error(
       getPayloadErrorMessage(payload) ||
-        `OpenRouter request failed: ${response.status} ${response.statusText}`
-    );
+        `OpenRouter request failed: ${response.status} ${response.statusText}`,
+    ) as Error & { providerRejected: boolean };
+    error.providerRejected =
+      response.status >= 400 &&
+      response.status < 500 &&
+      ![408, 409].includes(response.status);
+    throw error;
   }
 
   return payload as T;
@@ -109,12 +118,12 @@ const openRouterFetchJson = async <T>(
 
 const extractOpenRouterMessageText = (completion: OpenRouterChatCompletion) => {
   const content = completion.choices?.[0]?.message?.content;
-  if (typeof content === 'string') return content;
+  if (typeof content === "string") return content;
   if (Array.isArray(content)) {
     return content
       .map((part) => part.text)
-      .filter((text): text is string => typeof text === 'string')
-      .join('\n')
+      .filter((text): text is string => typeof text === "string")
+      .join("\n")
       .trim();
   }
 
@@ -122,18 +131,18 @@ const extractOpenRouterMessageText = (completion: OpenRouterChatCompletion) => {
 };
 
 const parseBannerPlanJson = (rawText: string) => {
-  const stripped = rawText.replace(/```(?:json)?\n?|\n?```/g, '').trim();
+  const stripped = rawText.replace(/```(?:json)?\n?|\n?```/g, "").trim();
 
   try {
     return JSON.parse(stripped) as BannerPlan;
   } catch {
-    const start = stripped.indexOf('{');
-    const end = stripped.lastIndexOf('}');
+    const start = stripped.indexOf("{");
+    const end = stripped.lastIndexOf("}");
     if (start >= 0 && end > start) {
       return JSON.parse(stripped.slice(start, end + 1)) as BannerPlan;
     }
 
-    throw new Error('Invalid JSON returned for banner plan.');
+    throw new Error("Invalid JSON returned for banner plan.");
   }
 };
 
@@ -145,87 +154,108 @@ Has Background Upload: ${request.hasBackgroundImage}
 Has Asset Upload: ${request.hasAssetImage}
 `;
 
-export const generateBannerPlanWithOpenRouter = async (request: BannerRequest): Promise<BannerPlan> => {
+export const generateBannerPlanWithOpenRouter = async (
+  request: BannerRequest,
+): Promise<BannerPlan> => {
   const bannerCount = clampBannerCount(request.bannerCount);
-  const completion = await openRouterFetchJson<OpenRouterChatCompletion>('/chat/completions', {
-    method: 'POST',
-    body: JSON.stringify({
-      model: env.OPENROUTER_TEXT_MODEL,
-      messages: [
-        {
-          role: 'system',
-          content: `${BANNER_SYSTEM_INSTRUCTION}\nReturn only a valid JSON object. Do not wrap it in Markdown.`,
-        },
-        {
-          role: 'user',
-          content: buildBannerPrompt(request, bannerCount),
-        },
-      ],
-      response_format: { type: 'json_object' },
-      temperature: 0.5,
-      max_completion_tokens: 8192,
-    }),
-  });
+  const completion = await openRouterFetchJson<OpenRouterChatCompletion>(
+    "/chat/completions",
+    {
+      method: "POST",
+      body: JSON.stringify({
+        model: env.OPENROUTER_TEXT_MODEL,
+        messages: [
+          {
+            role: "system",
+            content: `${BANNER_SYSTEM_INSTRUCTION}\nReturn only a valid JSON object. Do not wrap it in Markdown.`,
+          },
+          {
+            role: "user",
+            content: buildBannerPrompt(request, bannerCount),
+          },
+        ],
+        response_format: { type: "json_object" },
+        temperature: 0.5,
+        max_completion_tokens: 8192,
+      }),
+    },
+  );
 
   const rawText = extractOpenRouterMessageText(completion);
   if (!rawText) {
-    throw new Error('No banner plan returned from OpenRouter.');
+    throw new Error("No banner plan returned from OpenRouter.");
   }
 
-  return normalizeBannerPlan(parseBannerPlanJson(rawText), bannerCount);
+  return normalizeBannerPlan(
+    bannerPlanSchema.parse(parseBannerPlanJson(rawText)),
+    bannerCount,
+  );
 };
 
-const getOpenRouterVideoModelId = (preset: VideoModelPreset = 'fast') =>
-  preset === 'quality' ? env.OPENROUTER_VIDEO_MODEL_QUALITY : env.OPENROUTER_VIDEO_MODEL_FAST;
+const getOpenRouterVideoModelId = (preset: VideoModelPreset = "fast") =>
+  preset === "quality"
+    ? env.OPENROUTER_VIDEO_MODEL_QUALITY
+    : env.OPENROUTER_VIDEO_MODEL_FAST;
 
 const getOpenRouterVideoErrorMessage = (job: OpenRouterVideoJob) => {
-  if (typeof job.error === 'string' && job.error.trim()) return job.error;
-  if (job.error && typeof job.error === 'object' && typeof job.error.message === 'string') {
+  if (typeof job.error === "string" && job.error.trim()) return job.error;
+  if (
+    job.error &&
+    typeof job.error === "object" &&
+    typeof job.error.message === "string"
+  ) {
     return job.error.message;
   }
-  return 'OpenRouter video generation failed.';
+  return "OpenRouter video generation failed.";
 };
 
 const mapOpenRouterVideoStatus = (
   job: OpenRouterVideoJob,
-  modelId: string
+  modelId: string,
 ): VideoGenerationStatus => {
-  const normalizedStatus = (job.status || 'pending').toLowerCase();
-  const operationName = job.id || '';
+  const normalizedStatus = (job.status || "pending").toLowerCase();
+  const operationName = job.id || "";
 
-  if (normalizedStatus === 'completed' || normalizedStatus === 'succeeded' || normalizedStatus === 'success') {
+  if (
+    normalizedStatus === "completed" ||
+    normalizedStatus === "succeeded" ||
+    normalizedStatus === "success"
+  ) {
     return {
       operationName,
-      status: 'SUCCEEDED',
+      status: "SUCCEEDED",
       done: true,
-      mimeType: 'video/mp4',
+      mimeType: "video/mp4",
       modelId,
-      provider: 'openrouter',
+      provider: "openrouter",
     };
   }
 
   if (
-    normalizedStatus === 'failed' ||
-    normalizedStatus === 'cancelled' ||
-    normalizedStatus === 'canceled' ||
-    normalizedStatus === 'expired'
+    normalizedStatus === "failed" ||
+    normalizedStatus === "cancelled" ||
+    normalizedStatus === "canceled" ||
+    normalizedStatus === "expired"
   ) {
     return {
       operationName,
-      status: 'FAILED',
+      status: "FAILED",
       done: true,
       errorMessage: getOpenRouterVideoErrorMessage(job),
       modelId,
-      provider: 'openrouter',
+      provider: "openrouter",
     };
   }
 
   return {
     operationName,
-    status: normalizedStatus === 'pending' || normalizedStatus === 'queued' ? 'PENDING' : 'RUNNING',
+    status:
+      normalizedStatus === "pending" || normalizedStatus === "queued"
+        ? "PENDING"
+        : "RUNNING",
     done: false,
     modelId,
-    provider: 'openrouter',
+    provider: "openrouter",
   };
 };
 
@@ -235,7 +265,7 @@ const getSourceImageUrl = (sourceImageDataUrl: string) => {
 };
 
 export const startOpenRouterVideoGeneration = async (
-  request: VideoGenerationRequest
+  request: VideoGenerationRequest,
 ): Promise<VideoGenerationStatus> => {
   const modelId = getOpenRouterVideoModelId(request.modelPreset);
   const prompt = request.negativePrompt?.trim()
@@ -245,35 +275,35 @@ export const startOpenRouterVideoGeneration = async (
   const body: Record<string, unknown> = {
     model: modelId,
     prompt,
-    aspect_ratio: request.aspectRatio || '16:9',
+    aspect_ratio: request.aspectRatio || "16:9",
     duration: request.durationSeconds || 8,
-    resolution: '720p',
+    resolution: "720p",
     generate_audio: request.includeAudio ?? false,
   };
 
   if (request.sourceImageDataUrl) {
     body.frame_images = [
       {
-        type: 'image_url',
+        type: "image_url",
         image_url: {
           url: getSourceImageUrl(request.sourceImageDataUrl),
         },
-        frame_type: 'first_frame',
+        frame_type: "first_frame",
       },
     ];
   }
 
   const job = await openRouterFetchJson<OpenRouterVideoJob>(
-    '/videos',
+    "/videos",
     {
-      method: 'POST',
+      method: "POST",
       body: JSON.stringify(body),
     },
-    [200, 202]
+    [200, 202],
   );
 
   if (!job.id) {
-    throw new Error('OpenRouter video generation did not return a job id.');
+    throw new Error("OpenRouter video generation did not return a job id.");
   }
 
   return mapOpenRouterVideoStatus(job, modelId);
@@ -281,43 +311,45 @@ export const startOpenRouterVideoGeneration = async (
 
 export const getOpenRouterVideoGenerationStatus = async (
   operationName: string,
-  modelPreset?: VideoModelPreset
+  modelPreset?: VideoModelPreset,
 ) => {
   const modelId = getOpenRouterVideoModelId(modelPreset);
-  const job = await openRouterFetchJson<OpenRouterVideoJob>(`/videos/${encodeURIComponent(operationName)}`);
+  const job = await openRouterFetchJson<OpenRouterVideoJob>(
+    `/videos/${encodeURIComponent(operationName)}`,
+  );
   return mapOpenRouterVideoStatus(job, modelId);
 };
 
 export const downloadOpenRouterGeneratedVideo = async (
   operationName: string,
-  modelPreset?: VideoModelPreset
+  modelPreset?: VideoModelPreset,
 ): Promise<{ buffer: Buffer; mimeType: string }> => {
   const modelId = getOpenRouterVideoModelId(modelPreset);
-  const job = await openRouterFetchJson<OpenRouterVideoJob>(`/videos/${encodeURIComponent(operationName)}`);
+  const job = await openRouterFetchJson<OpenRouterVideoJob>(
+    `/videos/${encodeURIComponent(operationName)}`,
+  );
   const status = mapOpenRouterVideoStatus(job, modelId);
 
-  if (status.status === 'FAILED') {
-    throw new Error(status.errorMessage || 'OpenRouter video generation failed.');
+  if (status.status === "FAILED") {
+    throw new Error(
+      status.errorMessage || "OpenRouter video generation failed.",
+    );
   }
 
   if (!status.done) {
-    throw new Error('Video is still generating. Please wait for completion before downloading.');
+    throw new Error(
+      "Video is still generating. Please wait for completion before downloading.",
+    );
   }
 
-  const downloadUrl = job.unsigned_urls?.[0] || `${getBaseUrl()}/videos/${encodeURIComponent(operationName)}/content?index=0`;
-  const needsAuth = downloadUrl.startsWith(getBaseUrl()) || downloadUrl.startsWith('/api/');
-  const response = await fetch(downloadUrl.startsWith('/api/') ? `https://openrouter.ai${downloadUrl}` : downloadUrl, {
-    headers: needsAuth ? getOpenRouterHeaders(false) : undefined,
-    redirect: 'follow',
-  });
-
-  if (!response.ok) {
-    throw new Error(`Failed to download OpenRouter video: ${response.status} ${response.statusText}`);
-  }
-
-  const arrayBuffer = await response.arrayBuffer();
-  return {
-    buffer: Buffer.from(arrayBuffer),
-    mimeType: response.headers.get('content-type') || 'video/mp4',
-  };
+  const downloadUrl =
+    job.unsigned_urls?.[0] ||
+    `${getBaseUrl()}/videos/${encodeURIComponent(operationName)}/content?index=0`;
+  const resolvedUrl = new URL(downloadUrl, getBaseUrl());
+  const needsAuth = resolvedUrl.origin === new URL(getBaseUrl()).origin;
+  return downloadVideo(
+    resolvedUrl.toString(),
+    needsAuth ? getOpenRouterHeaders(false) : undefined,
+    needsAuth ? resolvedUrl.hostname : undefined,
+  );
 };
