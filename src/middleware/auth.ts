@@ -28,6 +28,12 @@ export const requireAuth = async (
 
     const { data: userResult, error: userError } =
       await supabaseAdmin.auth.getUser(token);
+    if (userError && ![400, 401, 403, 422].includes(Number(userError.status))) {
+      throw new ApiError(
+        503,
+        "Authentication service is temporarily unavailable. Please retry.",
+      );
+    }
     if (userError || !userResult.user) {
       throw new ApiError(401, "Invalid or expired token.");
     }

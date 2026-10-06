@@ -1,3 +1,4 @@
+import { ApiError } from "../middleware/error.js";
 import { z } from "zod";
 export const imageDataUrlSchema = z
   .string()
@@ -31,3 +32,13 @@ export const bannerPlanSchema = z.object({
     keywords: z.array(z.string()),
   }),
 });
+
+export const parseProviderOutput = <T>(
+  schema: z.ZodType<T>,
+  value: unknown,
+): T => {
+  const result = schema.safeParse(value);
+  if (!result.success)
+    throw new ApiError(502, "Provider returned invalid output.");
+  return result.data;
+};

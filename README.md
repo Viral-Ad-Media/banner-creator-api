@@ -120,3 +120,11 @@ Deploy this repository independently of the frontend. Use the repository root, N
 Rollout order: back up/apply migration → deploy API → deploy matching frontend → configure private reconciliation scheduler. Verify health, login/profile, owned project save/load, one generation, idempotent retry, credit settlement, cross-account denial, and completed video recovery/download in staging. This repository does not deploy database migrations or schedule reconciliation automatically.
 
 Limits are shared through PostgreSQL: 300 API requests/minute per IP, 30 auth requests/minute per IP, and 100 generation requests/minute per authenticated user. Expired buckets are pruned during requests. Limiter database failures fail closed with 503. Incorrect proxy-hop configuration can group users into one IP or trust spoofed forwarding headers.
+
+## Follow-up review fixes (October 6, 2026)
+
+Authentication-provider network failures, throttling, and server outages return 503 rather than invalid-token 401. Confirmed invalid credentials still return 401. Terminal video state is returned even if no provider operation was persisted; a completed video with missing output returns an explicit recovery conflict instead of an internal exception.
+
+Video reconciliation keeps the stored operation ID when a provider poll omits it. OpenRouter job payloads are validated, unknown statuses are rejected without settling credits, and malformed provider plans/jobs return an upstream 502 rather than user-input 400. This keeps interrupted/uncertain dispatch keys and credit holds intact. Gemini video errors retain their provider HTTP status so confirmed rejections can release reservations. Image generation no longer treats a phrase in the prompt as a successful empty/bypassed generation.
+
+Provider JSON reads are capped at 1,000,000 bytes; redirect/error response bodies are cancelled and credentials are discarded when redirects cross origins. Regression tests cover these limits, authentication outages, terminal jobs, retained operation IDs, and malformed planner output. These changes require no additional migration beyond the hardening migration above.

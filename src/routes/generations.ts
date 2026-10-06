@@ -120,13 +120,13 @@ const publicJob = (g: any) => ({
   errorMessage: g.error_message ?? undefined,
 });
 export const reconcileVideo = async (userId: string, g: any) => {
+  if (g.status === "SUCCESS" || g.status === "FAILED") return g;
   const job = g.result?.job;
   if (!job?.operationName)
     throw new ApiError(
       409,
       "Job dispatch is pending reconciliation. Retry this request later; do not start a duplicate.",
     );
-  if (g.status === "SUCCESS" || g.status === "FAILED") return g;
   const status =
     job.provider === "openrouter"
       ? await getOpenRouterVideoGenerationStatus(
@@ -142,7 +142,10 @@ export const reconcileVideo = async (userId: string, g: any) => {
       : status.status === "FAILED"
         ? "FAILED"
         : "RUNNING",
-    { ...g.result, job: { ...job, ...status } },
+    {
+      ...g.result,
+      job: { ...job, ...status, operationName: job.operationName },
+    },
     status.status === "FAILED"
       ? "Video generation failed. Reserved credits were released."
       : undefined,
@@ -319,7 +322,12 @@ generationRouter.get("/video/download", async (req, res, next) => {
     g = await reconcileVideo(req.auth!.userId, g);
     if (g.status !== "SUCCESS")
       throw new ApiError(409, "Video is not ready to download.");
-    const job = g.result.job;
+    const job = g.result?.job;
+    if (!job?.operationName)
+      throw new ApiError(
+        409,
+        "Video output was not persisted. Contact support for recovery.",
+      );
     const { buffer, mimeType } =
       job.provider === "openrouter"
         ? await downloadOpenRouterGeneratedVideo(

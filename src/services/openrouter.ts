@@ -1,5 +1,10 @@
-import { bannerPlanSchema } from "../lib/validation.js";
-import { providerFetch, downloadVideo } from "../lib/providerFetch.js";
+import { z } from "zod";
+import { bannerPlanSchema, parseProviderOutput } from "../lib/validation.js";
+import {
+  providerFetch,
+  downloadVideo,
+  readProviderText,
+} from "../lib/providerFetch.js";
 import { env } from "../config/env.js";
 import {
   BANNER_SYSTEM_INSTRUCTION,
@@ -21,14 +26,18 @@ type OpenRouterChatCompletion = {
   }>;
 };
 
-type OpenRouterVideoJob = {
-  id?: string;
-  status?: string;
-  error?: string | { message?: string };
-  generation_id?: string | null;
-  unsigned_urls?: string[];
-  model?: string | null;
-};
+const openRouterVideoSchema = z.object({
+  id: z.string().min(1).optional(),
+  status: z.string().min(1),
+  error: z
+    .union([z.string(), z.object({ message: z.string().optional() })])
+    .nullable()
+    .optional(),
+  generation_id: z.string().nullable().optional(),
+  unsigned_urls: z.array(z.string().url()).optional(),
+  model: z.string().nullable().optional(),
+});
+type OpenRouterVideoJob = z.infer<typeof openRouterVideoSchema>;
 
 const getBaseUrl = () => env.OPENROUTER_BASE_URL.replace(/\/+$/, "");
 
@@ -60,7 +69,7 @@ const getOpenRouterHeaders = (includeJson = true): HeadersInit => {
 };
 
 const readResponsePayload = async (response: Response) => {
-  const text = await response.text();
+  const text = await readProviderText(response);
   if (!text) return null;
 
   try {
@@ -187,7 +196,7 @@ export const generateBannerPlanWithOpenRouter = async (
   }
 
   return normalizeBannerPlan(
-    bannerPlanSchema.parse(parseBannerPlanJson(rawText)),
+    parseProviderOutput(bannerPlanSchema, parseBannerPlanJson(rawText)),
     bannerCount,
   );
 };
@@ -213,7 +222,8 @@ const mapOpenRouterVideoStatus = (
   job: OpenRouterVideoJob,
   modelId: string,
 ): VideoGenerationStatus => {
-  const normalizedStatus = (job.status || "pending").toLowerCase();
+  job = parseProviderOutput(openRouterVideoSchema, job);
+  const normalizedStatus = job.status.toLowerCase();
   const operationName = job.id || "";
 
   if (
@@ -247,6 +257,17 @@ const mapOpenRouterVideoStatus = (
     };
   }
 
+  if (
+    ![
+      "pending",
+      "queued",
+      "running",
+      "processing",
+      "in_progress",
+      "generating",
+    ].includes(normalizedStatus)
+  )
+    throw new Error("Unrecognized video status from provider.");
   return {
     operationName,
     status:

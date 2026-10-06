@@ -204,3 +204,153 @@ test("pending replay never dispatches or changes an existing reservation", async
     globalThis.fetch = originalFetch;
   }
 });
+
+test("authentication service outages return 503 without rejecting valid sessions", async () => {
+  const { requireAuth } = await import("../src/middleware/auth");
+  const original = supabaseAdmin.auth.getUser;
+  try {
+    for (const [status, expected] of [
+      [0, 503],
+      [429, 503],
+      [503, 503],
+      [401, 401],
+      [403, 401],
+    ]) {
+      (supabaseAdmin.auth as any).getUser = async () => ({
+        data: { user: null },
+        error: { status },
+      });
+      let error: any;
+      await requireAuth(
+        { headers: { authorization: "Bearer valid-token" } } as any,
+        {} as any,
+        (e) => {
+          error = e;
+        },
+      );
+      assert.equal(error.statusCode, expected);
+    }
+  } finally {
+    supabaseAdmin.auth.getUser = original;
+  }
+});
+
+test("terminal video jobs without provider output report their final status", async () => {
+  const { reconcileVideo } = await import("../src/routes/generations");
+  const failed = { id: "job", status: "FAILED", result: null };
+  assert.equal(await reconcileVideo("owner", failed), failed);
+  const original = supabaseAdmin.from;
+  (supabaseAdmin as any).from = () => ({
+    select() {
+      return this;
+    },
+    eq() {
+      return this;
+    },
+    async maybeSingle() {
+      return { data: { ...failed, type: "VIDEO_GENERATION" }, error: null };
+    },
+  });
+  try {
+    let body: any;
+    await route(generationRouter, "/video/status")(
+      {
+        auth: { userId: "owner" },
+        query: { generationId: "36e05415-2b0b-4c48-afba-90e1935dc824" },
+      },
+      {
+        json: (value: any) => {
+          body = value;
+        },
+      },
+      (e) => {
+        throw e;
+      },
+    );
+    assert.equal(body.job.status, "FAILED");
+    assert.equal(body.job.done, true);
+  } finally {
+    supabaseAdmin.from = original;
+  }
+});
+
+test("video reconciliation preserves the persisted provider operation ID", async () => {
+  const { env } = await import("../src/config/env");
+  env.OPENROUTER_API_KEY = "test";
+  const { reconcileVideo } = await import("../src/routes/generations");
+  const originalFetch = globalThis.fetch;
+  const originalRpc = supabaseAdmin.rpc;
+  globalThis.fetch = async () =>
+    new Response(JSON.stringify({ status: "completed" }));
+  (supabaseAdmin as any).rpc = async (_name: string, args: any) => ({
+    data: { status: args.p_status, result: args.p_result },
+    error: null,
+  });
+  try {
+    const result = await reconcileVideo("owner", {
+      id: "job",
+      status: "RUNNING",
+      result: {
+        job: { provider: "openrouter", operationName: "owned-operation" },
+      },
+    });
+    assert.equal(result.result.job.operationName, "owned-operation");
+    assert.equal(result.status, "SUCCESS");
+  } finally {
+    globalThis.fetch = originalFetch;
+    supabaseAdmin.rpc = originalRpc;
+  }
+});
+
+test("malformed provider plans are upstream errors and retain the dispatch reservation", async () => {
+  const { env } = await import("../src/config/env");
+  env.OPENROUTER_API_KEY = "test";
+  const originalRpc = supabaseAdmin.rpc;
+  const originalFetch = globalThis.fetch;
+  const statuses: string[] = [];
+  (supabaseAdmin as any).rpc = async (name: string, args: any) => {
+    if (name === "reserve_generation")
+      return {
+        data: { existing: false, generation: { id: "job", status: "QUEUED" } },
+        error: null,
+      };
+    if (name === "finish_generation") {
+      statuses.push(args.p_status);
+      return { data: {}, error: null };
+    }
+    throw new Error("Unexpected RPC");
+  };
+  globalThis.fetch = async () =>
+    new Response(
+      JSON.stringify({
+        choices: [
+          {
+            message: { content: '{"main_banner": {"headline": "incomplete"}}' },
+          },
+        ],
+      }),
+    );
+  try {
+    let error: any;
+    await route(generationRouter, "/plan")(
+      {
+        auth: { userId: "owner" },
+        get: () => "36e05415-2b0b-4c48-afba-90e1935dc824",
+        body: {
+          userPrompt: "Summer campaign",
+          aspectRatio: "1:1",
+          textProvider: "openrouter",
+        },
+      },
+      {},
+      (e) => {
+        error = e;
+      },
+    );
+    assert.equal(error.statusCode, 502);
+    assert.deepEqual(statuses, ["UNKNOWN"]);
+  } finally {
+    supabaseAdmin.rpc = originalRpc;
+    globalThis.fetch = originalFetch;
+  }
+});

@@ -401,9 +401,12 @@ export const startVideoGeneration = async (
       error instanceof Error
         ? error.message
         : "Unable to start video generation.";
-    throw new Error(
+    const wrapped = new Error(
       `${message} Veo generation requires Gemini API access to the selected video model.`,
-    );
+      { cause: error },
+    ) as Error & { status?: number };
+    wrapped.status = Number((error as { status?: number })?.status);
+    throw wrapped;
   }
 };
 
@@ -466,10 +469,6 @@ export const generateImage = async (
   referenceImages: string[] = [],
 ): Promise<string> => {
   if (!prompt) throw new Error("Image prompt is required.");
-
-  if (prompt.toLowerCase().includes("user provided background")) {
-    return referenceImages[0] || "";
-  }
 
   const executeGen = async (promptText: string) => {
     const referenceParts = referenceImages

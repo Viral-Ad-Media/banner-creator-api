@@ -34,6 +34,7 @@ export const downloadVideo = async (
     });
     if ([301, 302, 303, 307, 308].includes(response.status)) {
       const location = response.headers.get("location");
+      await response.body?.cancel();
       if (!location) throw new ApiError(502, "Invalid provider redirect.");
       const next = new URL(location, current);
       if (next.protocol !== "https:" || next.username || next.password)
@@ -42,8 +43,10 @@ export const downloadVideo = async (
       current = next;
       continue;
     }
-    if (!response.ok)
+    if (!response.ok) {
+      await response.body?.cancel();
       throw new ApiError(502, "Provider video download failed.");
+    }
     const MAX_BYTES = 4_000_000; // Fits common serverless response budgets; oversized output fails clearly.
     if (Number(response.headers.get("content-length") || 0) > MAX_BYTES) {
       await response.body?.cancel();
@@ -74,4 +77,31 @@ export const downloadVideo = async (
     return { buffer: Buffer.concat(chunks), mimeType: "video/mp4" };
   }
   throw new ApiError(502, "Too many provider redirects.");
+};
+
+// Provider JSON can be malformed or oversized; cap allocation before parsing it.
+export const readProviderText = async (
+  response: Response,
+  maxBytes = 1_000_000,
+): Promise<string> => {
+  const reader = response.body?.getReader();
+  if (!reader) return "";
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  try {
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      size += value.byteLength;
+      if (size > maxBytes)
+        throw new ApiError(
+          502,
+          "Provider response exceeds the supported size.",
+        );
+      chunks.push(value);
+    }
+  } finally {
+    await reader.cancel();
+  }
+  return Buffer.concat(chunks).toString("utf8");
 };
