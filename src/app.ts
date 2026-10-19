@@ -1,22 +1,23 @@
-import cors from 'cors';
-import express from 'express';
-import type { RequestHandler } from 'express';
-import helmet from 'helmet';
-import type { HelmetOptions } from 'helmet';
-import morgan from 'morgan';
-import { env } from './config/env.js';
-import { createRateLimiter } from './middleware/rateLimit.js';
-import { errorHandler, notFoundHandler } from './middleware/error.js';
-import { healthRouter } from './routes/health.js';
-import { authRouter } from './routes/auth.js';
-import { projectRouter } from './routes/projects.js';
-import { generationRouter } from './routes/generations.js';
-import { avatarRouter } from './routes/avatars.js';
-import { billingRouter } from './routes/billing.js';
+import cors from "cors";
+import express from "express";
+import type { RequestHandler } from "express";
+import helmet from "helmet";
+import type { HelmetOptions } from "helmet";
+import morgan from "morgan";
+import { env } from "./config/env.js";
+import { createRateLimiter } from "./middleware/rateLimit.js";
+import { ApiError, errorHandler, notFoundHandler } from "./middleware/error.js";
+import { healthRouter } from "./routes/health.js";
+import { authRouter } from "./routes/auth.js";
+import { projectRouter } from "./routes/projects.js";
+import { generationRouter } from "./routes/generations.js";
+import { avatarRouter } from "./routes/avatars.js";
+import { billingRouter } from "./routes/billing.js";
 
 export const app = express();
+app.set("trust proxy", env.TRUST_PROXY_HOPS);
 
-const allowedOrigins = env.CORS_ORIGIN.split(',')
+const allowedOrigins = env.CORS_ORIGIN.split(",")
   .map((origin) => origin.trim())
   .filter(Boolean);
 type HelmetFactory = (options?: Readonly<HelmetOptions>) => RequestHandler;
@@ -34,23 +35,29 @@ app.use(
         return;
       }
 
-      callback(new Error(`CORS blocked for origin: ${origin}`));
+      callback(new ApiError(403, "Origin is not allowed."));
     },
     credentials: false,
-  })
+  }),
 );
-app.use(morgan('dev'));
-app.use(express.json({ limit: '12mb' }));
+app.use(morgan("dev"));
+app.use(express.json({ limit: "4mb" }));
 
-app.use('/api', createRateLimiter({ windowMs: 60_000, max: 300 }));
-app.use('/api/auth', createRateLimiter({ windowMs: 60_000, max: 30 }));
+app.use(
+  "/api",
+  createRateLimiter({ windowMs: 60_000, max: 300, scope: "api" }),
+);
+app.use(
+  "/api/auth",
+  createRateLimiter({ windowMs: 60_000, max: 30, scope: "auth" }),
+);
 
-app.use('/api/health', healthRouter);
-app.use('/api/auth', authRouter);
-app.use('/api/avatars', avatarRouter);
-app.use('/api/projects', projectRouter);
-app.use('/api/generations', generationRouter);
-app.use('/api/billing', billingRouter);
+app.use("/api/health", healthRouter);
+app.use("/api/auth", authRouter);
+app.use("/api/avatars", avatarRouter);
+app.use("/api/projects", projectRouter);
+app.use("/api/generations", generationRouter);
+app.use("/api/billing", billingRouter);
 
 app.use(notFoundHandler);
 app.use(errorHandler);

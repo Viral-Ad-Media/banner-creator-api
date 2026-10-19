@@ -1,70 +1,64 @@
-import { supabaseAdmin } from '../db/supabase.js';
-import { getPlanConfig } from '../config/plans.js';
-import type { GenerationType, PlanTier } from '../types/domain.js';
-import { ApiError } from '../middleware/error.js';
+import { createHash } from "node:crypto";
+import { supabaseAdmin } from "../db/supabase.js";
+import type { GenerationType, PlanTier } from "../types/domain.js";
+import { ApiError } from "../middleware/error.js";
 
-const CREDIT_COST: Record<GenerationType, number> = {
-  BANNER_PLAN: 3,
-  IMAGE_GENERATION: 5,
-  IMAGE_EDIT: 5,
-  VIDEO_GENERATION: 25,
+export const databaseError = (error: {
+  code?: string;
+  message: string;
+}): never => {
+  if (error.code === "P0001") throw new ApiError(402, error.message);
+  if (error.code === "P0002" || error.code === "PGRST116")
+    throw new ApiError(404, "Resource not found.");
+  if (error.code === "23505")
+    throw new ApiError(409, "Request key has already been used.");
+  console.error("Database operation failed", error.code, error.message);
+  throw new ApiError(
+    503,
+    "Data service is temporarily unavailable. Please retry.",
+  );
 };
-
-const startOfCurrentMonth = () => {
-  const now = new Date();
-  return new Date(now.getFullYear(), now.getMonth(), 1);
-};
-
-export const getCreditCost = (kind: GenerationType) => CREDIT_COST[kind];
-
-export const getUsageSummary = async (userId: string, plan: PlanTier) => {
-  const monthStart = startOfCurrentMonth().toISOString();
-
-  const { data, error } = await supabaseAdmin
-    .from('usage_events')
-    .select('credits')
-    .eq('user_id', userId)
-    .gte('created_at', monthStart);
-
-  if (error) {
-    throw new ApiError(500, `Failed to fetch usage summary: ${error.message}`);
-  }
-
-  const usedCredits = (data ?? []).reduce((total, row) => total + (row.credits ?? 0), 0);
-  const limit = getPlanConfig(plan).monthlyCredits;
-  const remainingCredits = Math.max(0, limit - usedCredits);
-
-  return {
-    usedCredits,
-    remainingCredits,
-    limit,
-  };
-};
-
-export const assertCreditsAvailable = async (userId: string, plan: PlanTier, kind: GenerationType) => {
-  const usage = await getUsageSummary(userId, plan);
-  const requiredCredits = getCreditCost(kind);
-
-  if (usage.remainingCredits < requiredCredits) {
-    throw new ApiError(402, 'Monthly credit limit reached for your plan. Upgrade to continue generating assets.');
-  }
-
-  return {
-    requiredCredits,
-    usage,
-  };
-};
-
-export const trackUsage = async (userId: string, kind: GenerationType) => {
-  const credits = getCreditCost(kind);
-
-  const { error } = await supabaseAdmin.from('usage_events').insert({
-    user_id: userId,
-    kind,
-    credits,
+export const getUsageSummary = async (userId: string, _plan?: PlanTier) => {
+  const { data, error } = await supabaseAdmin.rpc("credit_summary", {
+    p_user_id: userId,
   });
-
-  if (error) {
-    throw new ApiError(500, `Failed to track usage: ${error.message}`);
-  }
+  if (error) databaseError(error);
+  return data;
+};
+export const reserveGeneration = async (
+  userId: string,
+  requestKey: string,
+  kind: GenerationType,
+  payload: any,
+  input: any,
+) => {
+  const { data, error } = await supabaseAdmin.rpc("reserve_generation", {
+    p_user_id: userId,
+    p_request_key: requestKey,
+    p_hash: createHash("sha256").update(JSON.stringify(payload)).digest("hex"),
+    p_kind: kind,
+    p_prompt: payload.userPrompt ?? payload.prompt,
+    p_aspect: payload.aspectRatio ?? null,
+    p_project_id: payload.projectId ?? null,
+    p_input: input,
+  });
+  if (error) databaseError(error);
+  return data as { generation: any; existing: boolean };
+};
+export const finishGeneration = async (
+  userId: string,
+  generationId: string,
+  status: string,
+  result: unknown,
+  errorMessage?: string,
+) => {
+  const { data, error } = await supabaseAdmin.rpc("finish_generation", {
+    p_user_id: userId,
+    p_generation_id: generationId,
+    p_status: status,
+    p_result: result,
+    p_error: errorMessage ?? null,
+  });
+  if (error) databaseError(error);
+  return data;
 };

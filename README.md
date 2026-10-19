@@ -1,180 +1,130 @@
-# Banner Creator Backend
+# Banner Creator API
 
-TypeScript + Express API for the Banner Creator app. This service handles authenticated app data, Gemini/OpenRouter-powered generations, usage tracking, and mock billing flows.
+Authenticated TypeScript/Express API for [Banner Creator](https://github.com/Viral-Ad-Media/banner-creator). Supabase stores account data, projects, avatars, generation results, and transactional credit reservations. Gemini handles images and optional planning/video; OpenRouter supports optional planning/video.
 
-## Stack
+## Setup
 
-- Node.js 20+
-- npm 10+
-- Express 4
-- TypeScript
-- Supabase
-- Gemini via `@google/genai`
-- OpenRouter via the OpenAI-compatible chat API and async video API
-- Zod
-
-## Features
-
-- `GET /api/health` health check
-- Supabase token validation and profile bootstrap
-- Project CRUD endpoints
-- Banner plan, image generation, image edit, and video generation endpoints
-- Monthly usage tracking by plan tier
-- Mock billing summary and checkout/portal routes
-- Centralized error handling and API rate limiting
-
-## Project Layout
-
-```text
-.
-├── .env.example
-├── package.json
-├── src/
-│   ├── app.ts
-│   ├── server.ts
-│   ├── config/
-│   ├── db/
-│   ├── lib/
-│   ├── middleware/
-│   ├── routes/
-│   ├── services/
-│   └── types/
-├── supabase/
-│   └── schema.sql
-└── tsconfig.json
-```
-
-## Environment
-
-Create a local env file:
+Use Node.js 22.12+ and npm. Clone this repository as `banner-creator-api` beside the frontend's `banner-creator` directory.
 
 ```bash
+npm ci
 cp .env.example .env
 ```
 
-Use raw values, not shell-style quoted assignments copied into the Vercel dashboard. For example, set `SUPABASE_URL` to `https://your-project-ref.supabase.co`, not `"https://your-project-ref.supabase.co"`.
+Set `GEMINI_API_KEY`, `SUPABASE_URL`, and `SUPABASE_SERVICE_ROLE_KEY`. Keep service-role and provider keys on the server. Set `CORS_ORIGIN` to the exact frontend origin; comma-separated origins are supported. Local defaults are API `http://localhost:4000` and frontend `http://localhost:3000`.
 
-Required variables and optional OpenRouter overrides:
+Optional configuration:
 
-```bash
-NODE_ENV=development
-PORT=4000
-GEMINI_API_KEY=your-gemini-api-key
-TEXT_GENERATION_PROVIDER=gemini
-OPENROUTER_API_KEY=your-openrouter-api-key
-OPENROUTER_BASE_URL=https://openrouter.ai/api/v1
-OPENROUTER_TEXT_MODEL=openai/gpt-5.2
-OPENROUTER_VIDEO_MODEL_FAST=google/veo-3.1
-OPENROUTER_VIDEO_MODEL_QUALITY=google/veo-3.1
-OPENROUTER_APP_URL=http://localhost:3000
-OPENROUTER_APP_NAME=Social Studio
-CORS_ORIGIN=http://localhost:3000
-SUPABASE_URL=https://your-project-ref.supabase.co
-SUPABASE_SERVICE_ROLE_KEY=your-supabase-service-role-key
-```
+| Variable                                                        | Behavior                                                                                        |
+| --------------------------------------------------------------- | ----------------------------------------------------------------------------------------------- |
+| `TEXT_GENERATION_PROVIDER`                                      | `gemini` (default) or `openrouter`                                                              |
+| `OPENROUTER_API_KEY`                                            | Required when using OpenRouter                                                                  |
+| `OPENROUTER_BASE_URL`, `OPENROUTER_TEXT_MODEL`                  | Provider endpoint and planning model; defaults in `.env.example`                                |
+| `OPENROUTER_VIDEO_MODEL_FAST`, `OPENROUTER_VIDEO_MODEL_QUALITY` | Video model IDs                                                                                 |
+| `OPENROUTER_APP_URL`, `OPENROUTER_APP_NAME`                     | Attribution headers                                                                             |
+| `PROVIDER_TIMEOUT_MS`                                           | Default 40000; allowed 1000–45000; keep below the host deadline                                 |
+| `TRUST_PROXY_HOPS`                                              | Default 0; change only to the verified trusted proxy count, with no shorter route to the server |
 
-`CORS_ORIGIN` accepts a comma-separated list, so you can allow local development and Vercel at the same time. Example: `http://localhost:3000,https://your-web.vercel.app`.
+### Database initialization and upgrade
 
-OpenRouter is optional unless you choose it in the app or set `TEXT_GENERATION_PROVIDER=openrouter`. OpenRouter API keys stay server-side; the frontend only sends provider names.
+**Apply the database changes before deploying this API.**
 
-## Local Development
+- New database: run [supabase/schema.sql](supabase/schema.sql) in the Supabase SQL editor. It includes the hardening migration.
+- Existing database: back up first, then run [supabase/migrations/20261005_audit_hardening.sql](supabase/migrations/20261005_audit_hardening.sql). It is transactional and rerunnable.
 
-Install dependencies:
+Authenticated browser roles have owner-scoped read access only. Application writes and credit/quota/rate-limit RPCs require the service role. Existing write RLS policies do not grant table privileges. Server routes enforce account ownership, including video status/download and project references.
 
-```bash
-npm install
-```
-
-Start the API in watch mode:
+The migration reclassifies legacy pending videos previously marked successful. It retains historic usage records; review historic mock upgrades, foreign project references, and incorrectly charged video failures separately. Verify existing paid entitlements against actual payment records before enabling paid service. This migration cannot establish whether historic payments or provider jobs really completed.
 
 ```bash
 npm run dev
-```
-
-Type-check the project:
-
-```bash
-npm run typecheck
-```
-
-Build and run the compiled server:
-
-```bash
+npm run check
+npm audit
 npm run build
-npm run start
+npm start
 ```
 
-The server listens on `http://localhost:4000` by default.
+`check` runs type checking, regression tests, and compilation. Database tests use embedded PostgreSQL (PGlite), including migration replay, permissions, serialized concurrent reservation/quota requests, aggregation beyond 1000 rows, and rate buckets. Route tests cover ownership, billing, and validation. Run a staging smoke test against actual Supabase and provider accounts before production rollout; these tests do not make paid provider calls.
 
-## API Overview
+## API contract
 
-Base path: `/api`
+Base path `/api`. All routes except `/health` require `Authorization: Bearer <Supabase access token>`. Bodies and responses use JSON unless downloading video.
 
-- `GET /health`
-- `GET /auth/me`
-- `PATCH /auth/me`
-- `GET /projects`
-- `POST /projects`
-- `GET /projects/:projectId`
-- `PATCH /projects/:projectId`
-- `DELETE /projects/:projectId`
-- `GET /generations`
-- `POST /generations/plan`
-- `POST /generations/image`
-- `POST /generations/edit`
-- `POST /generations/video`
-- `GET /generations/video/status`
-- `GET /generations/video/download`
-- `GET /billing/summary`
-- `POST /billing/checkout-session`
-- `POST /billing/portal-session`
+| Routes                                                       | Purpose                                                |
+| ------------------------------------------------------------ | ------------------------------------------------------ |
+| `GET /health`                                                | Health response; also subject to shared API limiter    |
+| `GET /auth/me`, `PATCH /auth/me`                             | Profile lookup; update name only                       |
+| `GET /projects?offset=0`, `POST /projects`                   | List/create projects; 50 per page                      |
+| `GET`, `PATCH`, `DELETE /projects/:projectId`                | Owner-scoped project operations                        |
+| `GET /avatars`, `POST /avatars`, `DELETE /avatars/:avatarId` | Owner-scoped avatar library; maximum 12                |
+| `GET /generations?offset=0`                                  | Activity metadata, usage and `nextOffset`; 50 per page |
+| `GET /generations/:generationId`                             | Owner-scoped stored output; reconciles video state     |
+| `POST /generations/plan`, `/image`, `/edit`, `/video`        | Reserve credits and dispatch generation                |
+| `GET /generations/video/status?generationId=<uuid>`          | Reconcile an owned video job                           |
+| `GET /generations/video/download?generationId=<uuid>`        | Download completed owned video                         |
+| `GET /billing/summary`                                       | Current plan and usage                                 |
+| `POST /billing/checkout-session`, `/billing/portal-session`  | Return 501; paid billing is unavailable                |
 
-All routes except `/api/health` require `Authorization: Bearer <supabase-access-token>`.
+Every generation POST requires a UUID `Idempotency-Key`. Reuse the same key and same parsed payload after an interrupted request. Changing payload with the same key returns 409. A successful replay returns the stored result without buying another generation. Pending/uncertain dispatch returns 409; recorded failures return 422, allowing a new key for an intentional retry. Existing clients must switch video requests from `operationName`/`provider` to `generationId`.
 
-## Database Setup
+Example:
 
-Run [`supabase/schema.sql`](./supabase/schema.sql) in your Supabase SQL editor before using authenticated app flows.
+```http
+POST /api/generations/plan
+Authorization: Bearer <token>
+Idempotency-Key: <uuid>
+Content-Type: application/json
 
-## Deploying to Vercel
+{"userPrompt":"Summer product launch","aspectRatio":"1:1","bannerCount":3,"textProvider":"gemini"}
+```
 
-The backend can be deployed directly to Vercel as an Express project. Vercel's current Express guide supports `src/server.ts` as a valid entrypoint and allows either a default export or an `app.listen(...)` server pattern. I also added [`vercel.json`](./vercel.json) to raise the function timeout to 60 seconds for Gemini-backed routes.
+Optional `projectId` must belong to the caller. Image generation takes `prompt`, `aspectRatio`, and at most two `referenceImages`; editing takes `prompt` and `base64Image`. Images must be PNG/JPEG/WebP data URLs with at most 1,000,000 encoded characters each. The entire JSON request is limited to 4 MB. Planner output is validated before storage/return.
 
-Recommended project settings:
+Video takes `prompt`, `provider` (`gemini`/`openrouter`), `aspectRatio` (`16:9`/`9:16`), `durationSeconds`, `modelPreset` (`fast`/`quality`), `includeAudio`, and optional `negativePrompt`/`sourceImageDataUrl`. Gemini accepts 4/6/8 seconds; Gemini image-to-video requires 8. Model availability remains provider-dependent. Downloads use HTTPS, bounded redirects/deadlines, and a **4,000,000-byte limit** to fit the response budget. Oversized clips return 413; larger outputs require a future object-storage/streaming delivery path. Gemini 4:5 banner requests use 3:4 backgrounds, cropped to the final 4:5 document in the frontend.
 
-- Root Directory: `banner-creator-backend`
-- Framework Preset: `Express`
-- Install Command: `npm install`
-- Build Command: `npm run build`
+Invalid input/JSON returns 400, unauthorized requests 401, quotas 402, foreign/missing objects 404, pending/conflicting work 409, size limits 413, failed replays 422, and rate limits 429 with `Retry-After`. Internal/provider errors return generic 5xx messages and are logged server-side.
 
-Required Vercel environment variables:
+## Credits and reconciliation
 
-- `NODE_ENV=production`
-- `PORT=4000`
-- `GEMINI_API_KEY=...`
-- `TEXT_GENERATION_PROVIDER=gemini`
-- `OPENROUTER_API_KEY=...` if using OpenRouter
-- `OPENROUTER_BASE_URL=https://openrouter.ai/api/v1`
-- `OPENROUTER_TEXT_MODEL=openai/gpt-5.2`
-- `OPENROUTER_VIDEO_MODEL_FAST=google/veo-3.1`
-- `OPENROUTER_VIDEO_MODEL_QUALITY=google/veo-3.1`
-- `OPENROUTER_APP_URL=https://your-frontend-domain.vercel.app`
-- `OPENROUTER_APP_NAME=Social Studio`
-- `CORS_ORIGIN=https://your-frontend-domain.vercel.app`
-- `SUPABASE_URL=...`
-- `SUPABASE_SERVICE_ROLE_KEY=...`
+| Tier       | Monthly credits | Projects |
+| ---------- | --------------: | -------: |
+| FREE       |             120 |        5 |
+| PRO        |            3000 |      100 |
+| ENTERPRISE |           50000 |     1000 |
 
-Enter the values only. Do not include surrounding quotes in the Vercel UI.
+Planning costs 3 credits; images/edits 5; video 25. SQL reservations lock the account before checking available balance. Usage is aggregated in SQL, without a Data API row cap. Months use UTC; successful settlement charges the month in which the generation was created. Pending reservations reduce available credits in that month. Confirmed failures release reservations; success settles once.
 
-If you want the same backend to work for local development and production, set `CORS_ORIGIN` to a comma-separated list such as `http://localhost:3000,https://your-frontend-domain.vercel.app`.
+`QUEUED` means dispatch has been reserved; `RUNNING` means a known provider job is pending; `UNKNOWN` means dispatch outcome needs investigation; `SUCCESS`/`FAILED` are terminal. Provider requests have deadlines and no automatic image-generation retry. A timeout/network failure can occur after the provider accepted work, so its reservation stays held rather than authorizing duplicate paid work.
 
-After deploy, verify:
+Run this with server credentials from a private scheduler periodically (for example, every minute):
 
-- `GET https://<your-api-domain>/api/health`
-- Authenticated `GET /api/auth/me`
-- One generation request, especially `POST /api/generations/plan`
+```bash
+npm run reconcile
+```
 
-## Notes
+Known video jobs are polled and settled/released even when the browser is closed. Jobs without a stored provider operation require operator review; synchronous plan/image outcomes can also become uncertain. **Check the provider's actual outcome before resolving a reservation:**
 
-- The Gemini API key stays server-side only.
-- `CORS_ORIGIN` must match the frontend origin in local and production environments.
-- Billing routes are placeholders and do not create real Stripe sessions.
+```bash
+RECONCILE_ID=<generation-uuid> RECONCILE_OUTCOME=FAILED npm run reconcile
+# Use SUCCESS only after verifying the provider completed the paid work.
+```
+
+Manual reconciliation updates accounting/state; it cannot reconstruct output lost before persistence. There is no automatic expiry/refund of uncertain reservations. Watch scheduler logs and alert on old `QUEUED`/`UNKNOWN` records.
+
+Paid checkout and portal flows are deliberately disabled. They never mutate plans or create fake sessions. PRO/ENTERPRISE are operator-controlled entitlements until verified payment integration, signed webhooks, and subscription lifecycle handling are implemented. Team-size configuration is not an implemented team feature. Keep SQL limits and `src/config/plans.ts` synchronized if changing tiers.
+
+## Deployment
+
+Deploy this repository independently of the frontend. Use the repository root, Node 22.12+, `npm ci`, and `npm run build`; `npm start` runs the compiled Express server. [vercel.json](vercel.json) specifies a 60-second function budget. Set production server environment values from `.env.example`, including the frontend origin. Supply raw values in dashboards without surrounding shell quotes.
+
+Rollout order: back up/apply migration → deploy API → deploy matching frontend → configure private reconciliation scheduler. Verify health, login/profile, owned project save/load, one generation, idempotent retry, credit settlement, cross-account denial, and completed video recovery/download in staging. This repository does not deploy database migrations or schedule reconciliation automatically.
+
+Limits are shared through PostgreSQL: 300 API requests/minute per IP, 30 auth requests/minute per IP, and 100 generation requests/minute per authenticated user. Expired buckets are pruned during requests. Limiter database failures fail closed with 503. Incorrect proxy-hop configuration can group users into one IP or trust spoofed forwarding headers.
+
+## Follow-up review fixes (October 6, 2026)
+
+Authentication-provider network failures, throttling, and server outages return 503 rather than invalid-token 401. Confirmed invalid credentials still return 401. Terminal video state is returned even if no provider operation was persisted; a completed video with missing output returns an explicit recovery conflict instead of an internal exception.
+
+Video reconciliation keeps the stored operation ID when a provider poll omits it. OpenRouter job payloads are validated, unknown statuses are rejected without settling credits, and malformed provider plans/jobs return an upstream 502 rather than user-input 400. This keeps interrupted/uncertain dispatch keys and credit holds intact. Gemini video errors retain their provider HTTP status so confirmed rejections can release reservations. Image generation no longer treats a phrase in the prompt as a successful empty/bypassed generation.
+
+Provider JSON reads are capped at 1,000,000 bytes; redirect/error response bodies are cancelled and credentials are discarded when redirects cross origins. Regression tests cover these limits, authentication outages, terminal jobs, retained operation IDs, and malformed planner output. These changes require no additional migration beyond the hardening migration above.
