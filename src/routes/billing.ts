@@ -2,7 +2,7 @@ import { Router } from "express";
 import { z } from "zod";
 import { getPlanConfig } from "../config/plans.js";
 import { supabaseAdmin } from "../db/supabase.js";
-import { getUsageSummary } from "../lib/usage.js";
+import { databaseError, getUsageSummary } from "../lib/usage.js";
 import { ApiError } from "../middleware/error.js";
 import { requireAuth } from "../middleware/auth.js";
 
@@ -26,13 +26,14 @@ billingRouter.get("/summary", async (req, res, next) => {
       return;
     }
 
-    const { data: billingCustomer } = await supabaseAdmin
+    const { data: billingCustomer, error: billingError } = await supabaseAdmin
       .from("billing_customers")
       .select(
         "id, user_id, provider, customer_id, subscription_id, status, current_period_end, created_at, updated_at",
       )
       .eq("user_id", req.auth!.userId)
       .maybeSingle();
+    if (billingError) databaseError(billingError);
 
     const usage = await getUsageSummary(user.id, req.auth!.plan);
 

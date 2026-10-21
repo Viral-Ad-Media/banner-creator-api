@@ -127,6 +127,10 @@ projectRouter.patch("/:projectId", async (req, res, next) => {
       ...(payload.data !== undefined ? { data: payload.data } : {}),
     };
 
+    if (Object.keys(updates).length === 0) {
+      throw new ApiError(400, "Nothing to update.");
+    }
+
     const projectId = z.string().uuid().parse(req.params.projectId);
     const { data: project, error } = await supabaseAdmin
       .from("projects")
@@ -138,9 +142,8 @@ projectRouter.patch("/:projectId", async (req, res, next) => {
       )
       .single();
 
-    if (error || !project) {
-      throw new ApiError(404, "Project not found.");
-    }
+    if (error) databaseError(error);
+    if (!project) throw new ApiError(404, "Project not found.");
 
     res.json({ project });
   } catch (error) {
