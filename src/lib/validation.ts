@@ -5,7 +5,7 @@ export const imageDataUrlSchema = z
   .max(1_000_000)
   .regex(
     /^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/]+={0,2}$/,
-    "Use a PNG, JPEG, or WebP image under 700 KB.",
+    "Use a PNG, JPEG, or WebP image under 750 KB.",
   );
 export const bannerPlanSchema = z.object({
   main_banner: z.object({
