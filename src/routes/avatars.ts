@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { z } from "zod";
 import { imageDataUrlSchema } from "../lib/validation.js";
-import { supabaseAdmin } from "../db/supabase.js";
+import { database } from "../db/database.js";
 import { requireAuth } from "../middleware/auth.js";
 import { databaseError } from "../lib/usage.js";
 import { ApiError } from "../middleware/error.js";
@@ -44,7 +44,7 @@ avatarRouter.use(requireAuth);
 
 avatarRouter.get("/", async (req, res, next) => {
   try {
-    const { data: avatars, error } = await supabaseAdmin
+    const { data: avatars, error } = await database
       .from("avatars")
       .select(avatarSelectFields)
       .eq("user_id", req.auth!.userId)
@@ -55,7 +55,7 @@ avatarRouter.get("/", async (req, res, next) => {
     }
 
     res.json({
-      avatars: (avatars ?? []).map((avatar) =>
+      avatars: (avatars ?? []).map((avatar: AvatarRecord) =>
         mapAvatarRecord(avatar as AvatarRecord),
       ),
     });
@@ -68,7 +68,7 @@ avatarRouter.post("/", async (req, res, next) => {
   try {
     const payload = avatarCreateSchema.parse(req.body);
 
-    const { data: avatar, error } = await supabaseAdmin.rpc("create_resource", {
+    const { data: avatar, error } = await database.rpc("create_resource", {
       p_user_id: req.auth!.userId,
       p_kind: "avatar",
       p_payload: payload,
@@ -87,7 +87,7 @@ avatarRouter.delete("/:avatarId", async (req, res, next) => {
   try {
     const { avatarId } = avatarParamsSchema.parse(req.params);
 
-    const { error } = await supabaseAdmin
+    const { error } = await database
       .from("avatars")
       .delete()
       .eq("id", avatarId)

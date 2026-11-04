@@ -18,7 +18,7 @@ const envSchema = z.object({
     .max(45000)
     .default(40000),
   PORT: z.coerce.number().int().positive().default(4000),
-  GEMINI_API_KEY: z.string().min(1),
+  GEMINI_API_KEY: optionalNonEmptyString,
   TEXT_GENERATION_PROVIDER: z.enum(["gemini", "openrouter"]).default("gemini"),
   OPENROUTER_API_KEY: optionalNonEmptyString,
   OPENROUTER_BASE_URL: z.string().url().default("https://openrouter.ai/api/v1"),
@@ -28,8 +28,11 @@ const envSchema = z.object({
   OPENROUTER_APP_URL: optionalNonEmptyString,
   OPENROUTER_APP_NAME: z.string().min(1).default("Social Studio"),
   CORS_ORIGIN: z.string().default("http://localhost:3000"),
-  SUPABASE_URL: z.string().url(),
-  SUPABASE_SERVICE_ROLE_KEY: z.string().min(1),
+  DATABASE_URL: z.string().url().refine(v => /^postgres(ql)?:/.test(v), "Expected PostgreSQL URL"),
+  BETTER_AUTH_SECRET: z.string().min(32),
+  BETTER_AUTH_URL: z.string().url(),
+  RESEND_API_KEY: optionalNonEmptyString,
+  AUTH_EMAIL_FROM: optionalNonEmptyString,
 });
 
 const parsed = envSchema.safeParse(process.env);

@@ -80,9 +80,13 @@ export const DEFAULT_BANNER_COUNT = 3;
 export const MIN_BANNER_COUNT = 1;
 export const MAX_BANNER_COUNT = 6;
 
+const requireGeminiKey = () => {
+  if (!env.GEMINI_API_KEY) throw new ApiError(503, "GEMINI_API_KEY is not configured");
+  return env.GEMINI_API_KEY;
+};
 const getClient = () =>
   new GoogleGenAI({
-    apiKey: env.GEMINI_API_KEY,
+    apiKey: requireGeminiKey(),
     httpOptions: {
       timeout: remainingProviderTimeout(),
       retryOptions: { attempts: 1 },
@@ -458,7 +462,7 @@ export const downloadGeneratedVideo = async (
 
   return downloadVideo(
     generatedVideo.uri,
-    { "x-goog-api-key": env.GEMINI_API_KEY },
+    { "x-goog-api-key": requireGeminiKey() },
     "generativelanguage.googleapis.com",
   );
 };

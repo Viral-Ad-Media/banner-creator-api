@@ -1,7 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-process.env.SUPABASE_URL = "https://test.supabase.co";
-process.env.SUPABASE_SERVICE_ROLE_KEY = "test";
+process.env.DATABASE_URL = "postgresql://test:test@localhost/test";
+process.env.BETTER_AUTH_SECRET = "test-only-secret-at-least-thirty-two-characters";
+process.env.BETTER_AUTH_URL = "http://localhost:4000";
 process.env.GEMINI_API_KEY = "test";
 const { downloadVideo, readProviderText } =
   await import("../src/lib/providerFetch");

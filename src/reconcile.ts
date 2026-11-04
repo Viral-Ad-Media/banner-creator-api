@@ -1,5 +1,6 @@
 import "dotenv/config";
-import { supabaseAdmin } from "./db/supabase.js";
+import { pool } from "./db/pool.js";
+import { database } from "./db/database.js";
 import { reconcileVideo } from "./routes/generations.js";
 import { finishGeneration } from "./lib/usage.js";
 // Run with service credentials from a scheduler; never exposed as a public endpoint.
@@ -8,7 +9,7 @@ if (id) {
   const outcome = process.env.RECONCILE_OUTCOME;
   if (outcome !== "SUCCESS" && outcome !== "FAILED")
     throw new Error("Provide a verified RECONCILE_OUTCOME=SUCCESS or FAILED.");
-  const { data, error } = await supabaseAdmin
+  const { data, error } = await database
     .from("generations")
     .select("*")
     .eq("id", id)
@@ -27,7 +28,7 @@ if (id) {
   const ids: string[] = [];
   // Capture IDs before changing statuses so offset pagination cannot skip updated rows.
   for (;;) {
-    const { data, error } = await supabaseAdmin
+    const { data, error } = await database
       .from("generations")
       .select("id")
       .eq("type", "VIDEO_GENERATION")
@@ -35,12 +36,12 @@ if (id) {
       .order("created_at")
       .range(offset, offset + 99);
     if (error) throw error;
-    ids.push(...(data ?? []).map((g) => g.id));
+    ids.push(...(data ?? []).map((g: { id: string }) => g.id));
     if ((data?.length ?? 0) < 100) break;
     offset += 100;
   }
   for (const generationId of ids) {
-    const { data, error } = await supabaseAdmin
+    const { data, error } = await database
       .from("generations")
       .select("*")
       .eq("id", generationId)
@@ -60,3 +61,5 @@ if (id) {
     }
   }
 }
+
+await pool.end();

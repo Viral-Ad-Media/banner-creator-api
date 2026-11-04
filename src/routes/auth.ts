@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { z } from "zod";
-import { supabaseAdmin } from "../db/supabase.js";
+import { database } from "../db/database.js";
 import { requireAuth } from "../middleware/auth.js";
 import { ApiError } from "../middleware/error.js";
 
@@ -13,7 +13,7 @@ const updateProfileSchema = z.object({
 
 authRouter.get("/me", async (req, res, next) => {
   try {
-    const { data: user, error } = await supabaseAdmin
+    const { data: user, error } = await database
       .from("app_users")
       .select("id, name, email, plan")
       .eq("id", req.auth!.userId)
@@ -33,7 +33,7 @@ authRouter.patch("/me", async (req, res, next) => {
   try {
     const payload = updateProfileSchema.parse(req.body);
 
-    const { data: user, error } = await supabaseAdmin
+    const { data: user, error } = await database
       .from("app_users")
       .update({ name: payload.name })
       .eq("id", req.auth!.userId)
