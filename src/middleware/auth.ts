@@ -1,111 +1,46 @@
 import type { NextFunction, Request, Response } from "express";
-import { supabaseAdmin } from "../db/supabase.js";
-import type { PlanTier } from "../types/domain.js";
+import { fromNodeHeaders } from "better-auth/node";
+import { auth } from "../auth.js";
+import { pool } from "../db/pool.js";
 import { ApiError } from "./error.js";
-
-const extractBearerToken = (authHeader?: string) => {
-  if (!authHeader) return null;
-  const [scheme, token] = authHeader.split(" ");
-  if (scheme !== "Bearer" || !token) return null;
-  return token;
-};
-
-const normalizePlan = (value: string | null): PlanTier => {
-  if (value === "PRO" || value === "ENTERPRISE") return value;
-  return "FREE";
-};
-
 export const requireAuth = async (
   req: Request,
   _res: Response,
   next: NextFunction,
 ) => {
   try {
-    const token = extractBearerToken(req.headers.authorization);
-    if (!token) {
-      throw new ApiError(401, "Missing authorization token.");
-    }
-
-    const { data: userResult, error: userError } =
-      await supabaseAdmin.auth.getUser(token);
-    if (userError && ![400, 401, 403, 422].includes(Number(userError.status))) {
+    let session;
+    try {
+      session = await auth.api.getSession({
+        headers: fromNodeHeaders(req.headers),
+      });
+    } catch {
       throw new ApiError(
         503,
         "Authentication service is temporarily unavailable. Please retry.",
       );
     }
-    if (userError || !userResult.user) {
-      throw new ApiError(401, "Invalid or expired token.");
-    }
-
-    const authUser = userResult.user;
-    if (!authUser.email) {
-      throw new ApiError(
-        400,
-        "Authenticated user is missing an email address.",
-      );
-    }
-
-    const fallbackName =
-      (authUser.user_metadata?.name as string | undefined) ||
-      (authUser.user_metadata?.full_name as string | undefined) ||
-      (authUser.email?.split("@")[0] ?? "User");
-
-    const { data: existingProfile, error: profileLookupError } =
-      await supabaseAdmin
-        .from("app_users")
-        .select("id, plan")
-        .eq("id", authUser.id)
-        .maybeSingle();
-
-    if (profileLookupError) {
-      throw new ApiError(
-        500,
-        `Failed to load user profile: ${profileLookupError.message}`,
-      );
-    }
-
-    let appUser = existingProfile;
-    if (!appUser) {
-      const { data: insertedProfile, error: insertError } = await supabaseAdmin
-        .from("app_users")
-        .upsert(
-          {
-            id: authUser.id,
-            email: authUser.email,
-            name: fallbackName,
-            plan: "FREE",
-          },
-          { onConflict: "id", ignoreDuplicates: true },
-        )
-        .select("id, plan")
-        .maybeSingle();
-
-      if (insertError) {
-        throw new ApiError(
-          500,
-          `Failed to create user profile: ${insertError?.message || "unknown error"}`,
-        );
-      }
-
-      appUser =
-        insertedProfile ??
-        (
-          await supabaseAdmin
-            .from("app_users")
-            .select("id, plan")
-            .eq("id", authUser.id)
-            .single()
-        ).data;
-      if (!appUser)
-        throw new ApiError(503, "Could not load profile. Please retry.");
-    }
-
+    if (!session?.user) throw new ApiError(401, "Sign in to continue.");
+    const user = session.user;
+    // Never adopt profiles by email or overwrite an existing entitlement on login.
+    await pool.query(
+      `INSERT INTO app_users(id,email,name) VALUES($1,$2,$3) ON CONFLICT(id) DO NOTHING`,
+      [user.id, user.email, user.name],
+    );
+    const { rows } = await pool.query(
+      "SELECT id,plan FROM app_users WHERE id=$1",
+      [user.id],
+    );
+    const profile = rows[0];
+    if (!profile)
+      throw new ApiError(503, "Could not load profile. Please retry.");
     req.auth = {
-      userId: appUser.id,
-      plan: normalizePlan(appUser.plan),
+      userId: profile.id,
+      plan:
+        profile.plan === "PRO" || profile.plan === "ENTERPRISE"
+          ? profile.plan
+          : "FREE",
     };
-
     next();
   } catch (error) {
     next(error);

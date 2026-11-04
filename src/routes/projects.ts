@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { z } from "zod";
-import { supabaseAdmin } from "../db/supabase.js";
+import { database } from "../db/database.js";
 import { requireAuth } from "../middleware/auth.js";
 import { databaseError } from "../lib/usage.js";
 import { ApiError } from "../middleware/error.js";
@@ -9,7 +9,7 @@ const projectCreateSchema = z.object({
   name: z.string().trim().min(1).max(120),
   prompt: z.string().trim().max(5000).optional(),
   aspectRatio: z.enum(["1:1", "16:9", "9:16", "3:4", "4:5"]).optional(),
-  data: z.record(z.any()).optional(),
+  data: z.record(z.string(), z.any()).optional(),
 });
 
 const projectUpdateSchema = z.object({
@@ -19,7 +19,7 @@ const projectUpdateSchema = z.object({
     .enum(["1:1", "16:9", "9:16", "3:4", "4:5"])
     .nullable()
     .optional(),
-  data: z.record(z.any()).nullable().optional(),
+  data: z.record(z.string(), z.any()).nullable().optional(),
 });
 
 const projectRouter = Router();
@@ -33,7 +33,7 @@ projectRouter.get("/", async (req, res, next) => {
       .min(0)
       .default(0)
       .parse(req.query.offset);
-    const { data: projects, error } = await supabaseAdmin
+    const { data: projects, error } = await database
       .from("projects")
       .select("id, user_id, name, prompt, aspect_ratio, created_at, updated_at")
       .eq("user_id", req.auth!.userId)
@@ -54,7 +54,7 @@ projectRouter.post("/", async (req, res, next) => {
   try {
     const payload = projectCreateSchema.parse(req.body);
 
-    const { data: project, error } = await supabaseAdmin.rpc(
+    const { data: project, error } = await database.rpc(
       "create_resource",
       {
         p_user_id: req.auth!.userId,
@@ -73,7 +73,7 @@ projectRouter.post("/", async (req, res, next) => {
 projectRouter.get("/:projectId", async (req, res, next) => {
   try {
     const projectId = z.string().uuid().parse(req.params.projectId);
-    const { data: project, error } = await supabaseAdmin
+    const { data: project, error } = await database
       .from("projects")
       .select(
         "id, user_id, name, prompt, aspect_ratio, data, created_at, updated_at",
@@ -86,7 +86,7 @@ projectRouter.get("/:projectId", async (req, res, next) => {
       throw new ApiError(404, "Project not found.");
     }
 
-    const { data: generations, error: generationsError } = await supabaseAdmin
+    const { data: generations, error: generationsError } = await database
       .from("generations")
       .select(
         "id, type, status, prompt, aspect_ratio, error_message, created_at",
@@ -132,7 +132,7 @@ projectRouter.patch("/:projectId", async (req, res, next) => {
     }
 
     const projectId = z.string().uuid().parse(req.params.projectId);
-    const { data: project, error } = await supabaseAdmin
+    const { data: project, error } = await database
       .from("projects")
       .update(updates)
       .eq("id", projectId)
@@ -154,7 +154,7 @@ projectRouter.patch("/:projectId", async (req, res, next) => {
 projectRouter.delete("/:projectId", async (req, res, next) => {
   try {
     const projectId = z.string().uuid().parse(req.params.projectId);
-    const { error } = await supabaseAdmin
+    const { error } = await database
       .from("projects")
       .delete()
       .eq("id", projectId)

@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { supabaseAdmin } from "../db/supabase.js";
+import { database } from "../db/database.js";
 import type { GenerationType, PlanTier } from "../types/domain.js";
 import { ApiError } from "../middleware/error.js";
 
@@ -19,7 +19,7 @@ export const databaseError = (error: {
   );
 };
 export const getUsageSummary = async (userId: string, _plan?: PlanTier) => {
-  const { data, error } = await supabaseAdmin.rpc("credit_summary", {
+  const { data, error } = await database.rpc("credit_summary", {
     p_user_id: userId,
   });
   if (error) databaseError(error);
@@ -32,7 +32,7 @@ export const reserveGeneration = async (
   payload: any,
   input: any,
 ) => {
-  const { data, error } = await supabaseAdmin.rpc("reserve_generation", {
+  const { data, error } = await database.rpc("reserve_generation", {
     p_user_id: userId,
     p_request_key: requestKey,
     p_hash: createHash("sha256").update(JSON.stringify(payload)).digest("hex"),
@@ -52,7 +52,7 @@ export const finishGeneration = async (
   result: unknown,
   errorMessage?: string,
 ) => {
-  const { data, error } = await supabaseAdmin.rpc("finish_generation", {
+  const { data, error } = await database.rpc("finish_generation", {
     p_user_id: userId,
     p_generation_id: generationId,
     p_status: status,

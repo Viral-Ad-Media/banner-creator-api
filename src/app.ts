@@ -1,4 +1,6 @@
 import cors from "cors";
+import { toNodeHandler } from "better-auth/node";
+import { auth } from "./auth.js";
 import express from "express";
 import type { RequestHandler } from "express";
 import helmet from "helmet";
@@ -37,11 +39,12 @@ app.use(
 
       callback(new ApiError(403, "Origin is not allowed."));
     },
-    credentials: false,
+    credentials: true,
   }),
 );
-app.use(morgan("dev"));
-app.use(express.json({ limit: "4mb" }));
+// Recovery callbacks include one-time tokens in their URLs. Never write them to access logs.
+app.use(morgan("dev", { skip: (req) => req.path.startsWith("/api/auth/session/") }));
+
 
 app.use(
   "/api",
@@ -52,6 +55,9 @@ app.use(
   createRateLimiter({ windowMs: 60_000, max: 30, scope: "auth" }),
 );
 
+// Better Auth consumes the raw request stream; mount before express.json.
+app.all("/api/auth/session/*", toNodeHandler(auth));
+app.use(express.json({ limit: "4mb" }));
 app.use("/api/health", healthRouter);
 app.use("/api/auth", authRouter);
 app.use("/api/avatars", avatarRouter);

@@ -1,5 +1,6 @@
 import 'dotenv/config';
 import { app } from './app.js';
+import { pool } from './db/pool.js';
 import { env } from './config/env.js';
 
 const server = app.listen(env.PORT, () => {
@@ -8,7 +9,8 @@ const server = app.listen(env.PORT, () => {
 
 const shutdown = (signal: string) => {
   console.log(`Received ${signal}. Shutting down backend...`);
-  server.close(() => {
+  server.close(async () => {
+    await pool.end();
     process.exit(0);
   });
 };

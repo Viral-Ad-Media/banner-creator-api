@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import type { NextFunction, Request, Response } from "express";
-import { supabaseAdmin } from "../db/supabase.js";
+import { database } from "../db/database.js";
 import { ApiError } from "./error.js";
 export const createRateLimiter =
   ({
@@ -21,7 +21,7 @@ export const createRateLimiter =
       const key = createHash("sha256")
         .update(`${scope}:${identity}`)
         .digest("hex");
-      const { data, error } = await supabaseAdmin.rpc("consume_rate_limit", {
+      const { data, error } = await database.rpc("consume_rate_limit", {
         p_key: key,
         p_max: max,
         p_window_seconds: Math.ceil(windowMs / 1000),

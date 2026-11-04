@@ -7,25 +7,12 @@ const db = new PGlite();
 const user = randomUUID(),
   other = randomUUID();
 before(async () => {
-  await db.exec(`create role anon; create role authenticated; create role service_role bypassrls;
- create schema auth; create table auth.users(id uuid primary key);
- create function auth.uid() returns uuid language sql as $$select nullif(current_setting('request.jwt.claim.sub',true),'')::uuid$$;
- grant usage on schema auth to authenticated;grant execute on function auth.uid() to authenticated;
- insert into auth.users values('${user}'),('${other}');`);
-  const schema = (
-    await readFile(new URL("../supabase/schema.sql", import.meta.url), "utf8")
-  ).replace("create extension if not exists pgcrypto;", "");
+  await db.exec(`create role browser; create table auth_user(id uuid primary key);
+ insert into auth_user values('${user}'),('${other}');`);
+  const schema = (await readFile(new URL("../db/schema.sql", import.meta.url), "utf8"))
+    .replace("create extension if not exists pgcrypto;", "");
   await db.exec(schema);
-  // Migration can be safely reapplied.
-  await db.exec(
-    await readFile(
-      new URL(
-        "../supabase/migrations/20261005_audit_hardening.sql",
-        import.meta.url,
-      ),
-      "utf8",
-    ),
-  );
+  await db.exec(schema); // Initialization is rerunnable.
   await db.exec(
     `insert into app_users(id,name,email)values('${user}','A','a@example.test'),('${other}','B','b@example.test');`,
   );
@@ -44,25 +31,12 @@ const reserve = async (
   );
   return r.rows[0].r;
 };
-test("client roles cannot change entitlements or invoke write RPCs", async () => {
-  const r =
-    await db.query<any>(`select has_table_privilege('authenticated','public.app_users','UPDATE') as can_update,
- has_table_privilege('anon','public.app_users','INSERT') as can_insert,
- has_function_privilege('authenticated','public.reserve_generation(uuid,uuid,text,text,text,text,uuid,jsonb)','EXECUTE') as can_rpc`);
-  assert.deepEqual(r.rows[0], {
-    can_update: false,
-    can_insert: false,
-    can_rpc: false,
-  });
-  await db.exec(`set role authenticated;set request.jwt.claim.sub='${user}';`);
+test("unprivileged database roles cannot change entitlements or call accounting functions", async () => {
+  await db.exec("set role browser");
   try {
-    await assert.rejects(
-      db.query("update app_users set plan='ENTERPRISE' where id=$1", [user]),
-      /permission denied/,
-    );
-  } finally {
-    await db.exec("reset role");
-  }
+    await assert.rejects(db.query("update app_users set plan='ENTERPRISE' where id=$1", [user]), /permission denied/);
+    await assert.rejects(db.query("select credit_summary($1)", [user]), /permission denied/);
+  } finally { await db.exec("reset role"); }
 });
 test("atomic reservations admit only 24 of 26 concurrent five-credit requests", async () => {
   const results = await Promise.allSettled(
@@ -186,7 +160,7 @@ test("late settlement charges the original generation month", async () => {
   const previousMonth =
     "date_trunc('month', now() at time zone 'UTC') at time zone 'UTC' - interval '1 month'";
   const uid = randomUUID();
-  await db.query("insert into auth.users values($1)", [uid]);
+  await db.query("insert into auth_user values($1)", [uid]);
   await db.query(
     "insert into app_users(id,name,email) values($1,'Late','late@example.test')",
     [uid],

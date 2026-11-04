@@ -1,9 +1,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-process.env.SUPABASE_URL = "https://test.supabase.co";
-process.env.SUPABASE_SERVICE_ROLE_KEY = "test";
+process.env.DATABASE_URL = "postgresql://test:test@localhost/test";
+process.env.BETTER_AUTH_SECRET = "test-only-secret-at-least-thirty-two-characters";
+process.env.BETTER_AUTH_URL = "http://localhost:4000";
 process.env.GEMINI_API_KEY = "test";
-const { supabaseAdmin } = await import("../src/db/supabase");
+const { database } = await import("../src/db/database");
 const { billingRouter } = await import("../src/routes/billing");
 const { generationRouter, loadOwnedGeneration } =
   await import("../src/routes/generations");
@@ -13,9 +14,9 @@ const { imageDataUrlSchema, bannerPlanSchema } =
 const route = (router: any, path: string) =>
   router.stack.find((l: any) => l.route?.path === path).route.stack[0].handle;
 test("checkout never invokes billing writes or grants entitlements", async () => {
-  const original = supabaseAdmin.from;
+  const original = database.from;
   let writes = 0;
-  (supabaseAdmin as any).from = () => {
+  (database as any).from = () => {
     writes++;
     throw new Error("Unexpected write");
   };
@@ -31,13 +32,13 @@ test("checkout never invokes billing writes or grants entitlements", async () =>
     assert.equal(failure.statusCode, 501);
     assert.equal(writes, 0);
   } finally {
-    supabaseAdmin.from = original;
+    database.from = original;
   }
 });
 test("foreign generation IDs return 404 before provider calls", async () => {
-  const original = supabaseAdmin.from;
+  const original = database.from;
   const filters: any[] = [];
-  (supabaseAdmin as any).from = () => ({
+  (database as any).from = () => ({
     select() {
       return this;
     },
@@ -59,7 +60,7 @@ test("foreign generation IDs return 404 before provider calls", async () => {
       ["user_id", "owner"],
     ]);
   } finally {
-    supabaseAdmin.from = original;
+    database.from = original;
   }
 });
 test("video routes reject client-controlled operation names", async () => {
@@ -105,7 +106,7 @@ test("request schemas reject unsafe image formats and malformed planner output",
 test("lost provider responses retain credits while confirmed rejection releases them", async () => {
   const { env } = await import("../src/config/env");
   env.OPENROUTER_API_KEY = "test";
-  const originalRpc = supabaseAdmin.rpc;
+  const originalRpc = database.rpc;
   const originalFetch = globalThis.fetch;
   try {
     for (const [rejected, expected] of [
@@ -113,7 +114,7 @@ test("lost provider responses retain credits while confirmed rejection releases 
       [true, "FAILED"],
     ] as const) {
       const statuses: string[] = [];
-      (supabaseAdmin as any).rpc = async (name: string, args: any) => {
+      (database as any).rpc = async (name: string, args: any) => {
         if (name === "reserve_generation")
           return {
             data: {
@@ -155,17 +156,17 @@ test("lost provider responses retain credits while confirmed rejection releases 
       assert.deepEqual(statuses, [expected]);
     }
   } finally {
-    supabaseAdmin.rpc = originalRpc;
+    database.rpc = originalRpc;
     globalThis.fetch = originalFetch;
   }
 });
 
 test("pending replay never dispatches or changes an existing reservation", async () => {
-  const originalRpc = supabaseAdmin.rpc;
+  const originalRpc = database.rpc;
   const originalFetch = globalThis.fetch;
   let providerCalls = 0;
   const calls: string[] = [];
-  (supabaseAdmin as any).rpc = async (name: string) => {
+  (database as any).rpc = async (name: string) => {
     calls.push(name);
     if (name === "reserve_generation")
       return {
@@ -200,47 +201,31 @@ test("pending replay never dispatches or changes an existing reservation", async
     assert.equal(providerCalls, 0);
     assert.deepEqual(calls, ["reserve_generation", "credit_summary"]);
   } finally {
-    supabaseAdmin.rpc = originalRpc;
+    database.rpc = originalRpc;
     globalThis.fetch = originalFetch;
   }
 });
 
-test("authentication service outages return 503 without rejecting valid sessions", async () => {
+test("authentication outages return 503 while missing sessions return 401", async () => {
   const { requireAuth } = await import("../src/middleware/auth");
-  const original = supabaseAdmin.auth.getUser;
+  const { auth } = await import("../src/auth");
+  const original = auth.api.getSession;
   try {
-    for (const [status, expected] of [
-      [0, 503],
-      [429, 503],
-      [503, 503],
-      [401, 401],
-      [403, 401],
-    ]) {
-      (supabaseAdmin.auth as any).getUser = async () => ({
-        data: { user: null },
-        error: { status },
-      });
+    for (const [outage, expected] of [[true,503],[false,401]]) {
+      (auth.api as any).getSession = async () => { if (outage) throw new Error("DB down"); return null; };
       let error: any;
-      await requireAuth(
-        { headers: { authorization: "Bearer valid-token" } } as any,
-        {} as any,
-        (e) => {
-          error = e;
-        },
-      );
+      await requireAuth({headers:{}} as any, {} as any, e => { error=e; });
       assert.equal(error.statusCode, expected);
     }
-  } finally {
-    supabaseAdmin.auth.getUser = original;
-  }
+  } finally { auth.api.getSession = original; }
 });
 
 test("terminal video jobs without provider output report their final status", async () => {
   const { reconcileVideo } = await import("../src/routes/generations");
   const failed = { id: "job", status: "FAILED", result: null };
   assert.equal(await reconcileVideo("owner", failed), failed);
-  const original = supabaseAdmin.from;
-  (supabaseAdmin as any).from = () => ({
+  const original = database.from;
+  (database as any).from = () => ({
     select() {
       return this;
     },
@@ -270,7 +255,7 @@ test("terminal video jobs without provider output report their final status", as
     assert.equal(body.job.status, "FAILED");
     assert.equal(body.job.done, true);
   } finally {
-    supabaseAdmin.from = original;
+    database.from = original;
   }
 });
 
@@ -279,10 +264,10 @@ test("video reconciliation preserves the persisted provider operation ID", async
   env.OPENROUTER_API_KEY = "test";
   const { reconcileVideo } = await import("../src/routes/generations");
   const originalFetch = globalThis.fetch;
-  const originalRpc = supabaseAdmin.rpc;
+  const originalRpc = database.rpc;
   globalThis.fetch = async () =>
     new Response(JSON.stringify({ status: "completed" }));
-  (supabaseAdmin as any).rpc = async (_name: string, args: any) => ({
+  (database as any).rpc = async (_name: string, args: any) => ({
     data: { status: args.p_status, result: args.p_result },
     error: null,
   });
@@ -298,17 +283,17 @@ test("video reconciliation preserves the persisted provider operation ID", async
     assert.equal(result.status, "SUCCESS");
   } finally {
     globalThis.fetch = originalFetch;
-    supabaseAdmin.rpc = originalRpc;
+    database.rpc = originalRpc;
   }
 });
 
 test("malformed provider plans are upstream errors and retain the dispatch reservation", async () => {
   const { env } = await import("../src/config/env");
   env.OPENROUTER_API_KEY = "test";
-  const originalRpc = supabaseAdmin.rpc;
+  const originalRpc = database.rpc;
   const originalFetch = globalThis.fetch;
   const statuses: string[] = [];
-  (supabaseAdmin as any).rpc = async (name: string, args: any) => {
+  (database as any).rpc = async (name: string, args: any) => {
     if (name === "reserve_generation")
       return {
         data: { existing: false, generation: { id: "job", status: "QUEUED" } },
@@ -350,7 +335,26 @@ test("malformed provider plans are upstream errors and retain the dispatch reser
     assert.equal(error.statusCode, 502);
     assert.deepEqual(statuses, ["UNKNOWN"]);
   } finally {
-    supabaseAdmin.rpc = originalRpc;
+    database.rpc = originalRpc;
     globalThis.fetch = originalFetch;
   }
+});
+
+test("missing Gemini configuration fails without buying work and releases credits", async () => {
+  const { env } = await import("../src/config/env");
+  const key=env.GEMINI_API_KEY;
+  const original=database.rpc;
+  const statuses:string[]=[];
+  env.GEMINI_API_KEY=undefined;
+  (database as any).rpc=async(name:string,args:any)=> {
+    if(name==='reserve_generation')return {data:{existing:false,generation:{id:'job',status:'QUEUED'}},error:null};
+    if(name==='finish_generation'){statuses.push(args.p_status);return {data:{},error:null};}
+    throw new Error('Unexpected function');
+  };
+  try {
+    let failure:any;
+    await route(generationRouter,'/image')({auth:{userId:'owner'},get:()=> '36e05415-2b0b-4c48-afba-90e1935dc824',body:{prompt:'Test banner',aspectRatio:'1:1'}},{},(error:any)=>{failure=error;});
+    assert.equal(failure.statusCode,503);
+    assert.deepEqual(statuses,['FAILED']);
+  } finally {env.GEMINI_API_KEY=key;database.rpc=original;}
 });

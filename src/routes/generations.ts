@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { z } from "zod";
-import { supabaseAdmin } from "../db/supabase.js";
+import { database } from "../db/database.js";
 import { env } from "../config/env.js";
 import { requireAuth } from "../middleware/auth.js";
 import { createRateLimiter } from "../middleware/rateLimit.js";
@@ -97,7 +97,7 @@ generationRouter.use(
 generationRouter.use((_req, _res, next) => withProviderDeadline(next));
 
 export const loadOwnedGeneration = async (userId: string, id: string) => {
-  const { data, error } = await supabaseAdmin
+  const { data, error } = await database
     .from("generations")
     .select("*")
     .eq("id", id)
@@ -171,7 +171,7 @@ const sendReplay = (res: any, kind: GenerationType, g: any, usage: any) => {
 };
 const handler =
   (
-    schema: z.ZodTypeAny,
+    schema: z.ZodType<any>,
     kind: GenerationType,
     generate: (p: any) => Promise<any>,
   ) =>
@@ -283,7 +283,7 @@ generationRouter.get("/", async (req, res, next) => {
     const { offset } = z
       .object({ offset: z.coerce.number().int().min(0).default(0) })
       .parse(req.query);
-    const { data, error } = await supabaseAdmin
+    const { data, error } = await database
       .from("generations")
       .select(
         "id,project_id,type,status,prompt,aspect_ratio,error_message,created_at",
